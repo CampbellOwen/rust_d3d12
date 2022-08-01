@@ -27,9 +27,7 @@ fn main() {
                 WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
                 _ => (),
             },
-            Event::MainEventsCleared => {
-                renderer.render();
-            }
+            Event::MainEventsCleared => renderer.render().unwrap(),
             _ => (),
         };
     });
