@@ -1,6 +1,5 @@
-use anyhow::{Ok, Result};
+use anyhow::{Context, Ok, Result};
 use hassle_rs::{compile_hlsl, validate_dxil};
-use std::io::Read;
 
 use windows::core::{Interface, PCSTR};
 use windows::Win32::Foundation::{HANDLE, HWND, RECT};
@@ -29,7 +28,7 @@ fn get_hardware_adapter(
             D3D12CreateDevice(
                 &adapter,
                 feature_level,
-                std::ptr::null_mut::<Option<ID3D12Device>>(),
+                std::ptr::null_mut::<Option<ID3D12Device4>>(),
             )
         }
         .is_ok()
@@ -56,13 +55,13 @@ fn create_dxgi_factory() -> Result<IDXGIFactory5> {
 fn create_device(
     adapter: &IDXGIAdapter1,
     feature_level: D3D_FEATURE_LEVEL,
-) -> Result<ID3D12Device> {
-    let mut device: Option<ID3D12Device> = None;
+) -> Result<ID3D12Device4> {
+    let mut device: Option<ID3D12Device4> = None;
     unsafe { D3D12CreateDevice(adapter, feature_level, &mut device) }?;
     Ok(device.unwrap())
 }
 
-fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
+fn create_root_signature(device: &ID3D12Device4) -> Result<ID3D12RootSignature> {
     let desc = D3D12_ROOT_SIGNATURE_DESC {
         Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
         ..Default::default()
@@ -92,26 +91,68 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
     Ok(root_signature)
 }
 
+pub struct CompiledShader {
+    pub name: String,
+    pub byte_code: Vec<u8>,
+}
+
+impl CompiledShader {
+    pub fn get_handle(&self) -> D3D12_SHADER_BYTECODE {
+        D3D12_SHADER_BYTECODE {
+            pShaderBytecode: self.byte_code.as_ptr() as _,
+            BytecodeLength: self.byte_code.len(),
+        }
+    }
+}
+
+const SHADER_COMPILE_FLAGS: &[&str] = if cfg!(debug_assertions) {
+    &["-Od", "-Zi"]
+} else {
+    &[]
+};
+
+fn compile_shader(filename: &str, entry_point: &str, shader_model: &str) -> Result<CompiledShader> {
+    let path = std::path::Path::new(filename);
+
+    let shader_source = std::fs::read_to_string(path)?;
+    let name = path
+        .file_name()
+        .context("No filename")?
+        .to_str()
+        .map(|str| str.to_string())
+        .context("Can't convert to string")?;
+
+    let ir = compile_hlsl(
+        &name,
+        &shader_source,
+        entry_point,
+        shader_model,
+        SHADER_COMPILE_FLAGS,
+        &[],
+    )?;
+    validate_dxil(&ir)?;
+
+    Ok(CompiledShader {
+        name,
+        byte_code: ir,
+    })
+}
+
+pub fn compile_pixel_shader(filename: &str, entry_point: &str) -> Result<CompiledShader> {
+    compile_shader(filename, entry_point, "ps_6_5")
+}
+
+pub fn compile_vertex_shader(filename: &str, entry_point: &str) -> Result<CompiledShader> {
+    compile_shader(filename, entry_point, "vs_6_5")
+}
+
 fn create_pipeline_state(
-    device: &ID3D12Device,
+    device: &ID3D12Device4,
     root_signature: &ID3D12RootSignature,
+    vertex_shader: &CompiledShader,
+    pixel_shader: &CompiledShader,
 ) -> Result<ID3D12PipelineState> {
-    //let compile_flags = if cfg!(debug_assertions) {
-    //    D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION
-    //} else {
-    //    0
-    //};
-
-    let mut shader_code = String::new();
-    std::fs::File::open("src/shaders/triangle.hlsl")?.read_to_string(&mut shader_code)?;
-
-    let vs_ir = compile_hlsl("triangle.hlsl", &shader_code, "VSMain", "vs_6_5", &[], &[])?;
-    validate_dxil(&vs_ir)?;
-
-    let ps_ir = compile_hlsl("triangle.hlsl", &shader_code, "PSMain", "ps_6_5", &[], &[])?;
-    validate_dxil(&ps_ir)?;
-
-    let mut input_element_descs: [D3D12_INPUT_ELEMENT_DESC; 2] = [
+    let input_element_descs: [D3D12_INPUT_ELEMENT_DESC; 2] = [
         D3D12_INPUT_ELEMENT_DESC {
             SemanticName: PCSTR(b"POSITION\0".as_ptr()),
             SemanticIndex: 0,
@@ -126,7 +167,7 @@ fn create_pipeline_state(
             SemanticIndex: 0,
             Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
             InputSlot: 0,
-            AlignedByteOffset: 12,
+            AlignedByteOffset: 16,
             InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
@@ -134,18 +175,12 @@ fn create_pipeline_state(
 
     let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
         InputLayout: D3D12_INPUT_LAYOUT_DESC {
-            pInputElementDescs: input_element_descs.as_mut_ptr(),
+            pInputElementDescs: input_element_descs.as_ptr(),
             NumElements: input_element_descs.len() as u32,
         },
         pRootSignature: Some(root_signature.clone()),
-        VS: D3D12_SHADER_BYTECODE {
-            pShaderBytecode: vs_ir.as_ptr() as _,
-            BytecodeLength: vs_ir.len(),
-        },
-        PS: D3D12_SHADER_BYTECODE {
-            pShaderBytecode: ps_ir.as_ptr() as _,
-            BytecodeLength: ps_ir.len(),
-        },
+        VS: vertex_shader.get_handle(),
+        PS: pixel_shader.get_handle(),
         RasterizerState: D3D12_RASTERIZER_DESC {
             FillMode: D3D12_FILL_MODE_SOLID,
             CullMode: D3D12_CULL_MODE_NONE,
@@ -196,25 +231,25 @@ fn create_pipeline_state(
 
 #[repr(C)]
 struct Vertex {
-    position: [f32; 3],
+    position: [f32; 4],
     color: [f32; 4],
 }
 
 fn create_vertex_buffer(
-    device: &ID3D12Device,
+    device: &ID3D12Device4,
     aspect_ratio: f32,
 ) -> Result<(ID3D12Resource, D3D12_VERTEX_BUFFER_VIEW)> {
     let vertices = [
         Vertex {
-            position: [0.0, 0.25 * aspect_ratio, 0.0],
+            position: [0.0, 0.25 * aspect_ratio, 0.0, 1.0],
             color: [1.0, 0.0, 0.0, 1.0],
         },
         Vertex {
-            position: [0.25, -0.25 * aspect_ratio, 0.0],
+            position: [0.25, -0.25 * aspect_ratio, 0.0, 1.0],
             color: [0.0, 1.0, 0.0, 1.0],
         },
         Vertex {
-            position: [-0.25, -0.25 * aspect_ratio, 0.0],
+            position: [-0.25, -0.25 * aspect_ratio, 0.0, 1.0],
             color: [0.0, 0.0, 1.0, 1.0],
         },
     ];
@@ -287,148 +322,6 @@ struct SceneResources {
     fence: ID3D12Fence,
     fence_value: u64,
     fence_event: HANDLE,
-}
-
-fn bind_to_window(renderer: &Renderer, window_size: (u32, u32)) -> Result<SceneResources> {
-    let (width, height) = window_size;
-    let command_queue: ID3D12CommandQueue = unsafe {
-        renderer
-            .device
-            .CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
-                Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
-                ..Default::default()
-            })
-    }?;
-
-    let swap_chain_desc = DXGI_SWAP_CHAIN_DESC1 {
-        BufferCount: FRAME_COUNT,
-        Width: width,
-        Height: height,
-        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-        BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-        SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-
-    let swap_chain: IDXGISwapChain3 = unsafe {
-        renderer.dxgi_factory.CreateSwapChainForHwnd(
-            &command_queue,
-            renderer.hwnd,
-            &swap_chain_desc,
-            std::ptr::null_mut(),
-            None,
-        )?
-    }
-    .cast()?;
-
-    unsafe {
-        renderer
-            .dxgi_factory
-            .MakeWindowAssociation(renderer.hwnd, DXGI_MWA_NO_ALT_ENTER)?;
-    }
-
-    let frame_index = unsafe { swap_chain.GetCurrentBackBufferIndex() };
-
-    let rtv_heap: ID3D12DescriptorHeap = unsafe {
-        renderer
-            .device
-            .CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
-                NumDescriptors: FRAME_COUNT,
-                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                ..Default::default()
-            })
-    }?;
-
-    let rtv_descriptor_size = unsafe {
-        renderer
-            .device
-            .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
-    } as usize;
-    let rtv_handle = unsafe { rtv_heap.GetCPUDescriptorHandleForHeapStart() };
-
-    let render_targets: [ID3D12Resource; FRAME_COUNT as usize] =
-        array_init::try_array_init(|i: usize| -> Result<ID3D12Resource> {
-            let render_target: ID3D12Resource = unsafe { swap_chain.GetBuffer(i as u32) }?;
-            unsafe {
-                renderer.device.CreateRenderTargetView(
-                    &render_target,
-                    std::ptr::null(),
-                    D3D12_CPU_DESCRIPTOR_HANDLE {
-                        ptr: rtv_handle.ptr + i * rtv_descriptor_size,
-                    },
-                )
-            };
-            Ok(render_target)
-        })?;
-
-    let viewport = D3D12_VIEWPORT {
-        TopLeftX: 0.0,
-        TopLeftY: 0.0,
-        Width: width as f32,
-        Height: height as f32,
-        MinDepth: D3D12_MIN_DEPTH,
-        MaxDepth: D3D12_MAX_DEPTH,
-    };
-
-    let scissor_rect = RECT {
-        left: 0,
-        top: 0,
-        right: width as i32,
-        bottom: height as i32,
-    };
-
-    let command_allocator: ID3D12CommandAllocator = unsafe {
-        renderer
-            .device
-            .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
-    }?;
-
-    let root_signature = create_root_signature(&renderer.device)?;
-    let pso = create_pipeline_state(&renderer.device, &root_signature)?;
-
-    let command_list: ID3D12GraphicsCommandList = unsafe {
-        renderer.device.CreateCommandList(
-            0,
-            D3D12_COMMAND_LIST_TYPE_DIRECT,
-            &command_allocator,
-            &pso,
-        )
-    }?;
-    unsafe {
-        command_list.Close()?;
-    }
-
-    let aspect_ratio = (width as f32) / (height as f32);
-
-    let (vertex_buffer, vbv) = create_vertex_buffer(&renderer.device, aspect_ratio)?;
-
-    let fence = unsafe { renderer.device.CreateFence(0, D3D12_FENCE_FLAG_NONE) }?;
-    let fence_value = 1;
-    let fence_event = unsafe { CreateEventA(std::ptr::null(), false, false, None) }?;
-
-    Ok(SceneResources {
-        command_queue,
-        swap_chain,
-        frame_index,
-        render_targets,
-        rtv_heap,
-        rtv_descriptor_size,
-        viewport,
-        scissor_rect,
-        command_allocator,
-        root_signature,
-        pso,
-        command_list,
-        vertex_buffer,
-        vbv,
-        fence,
-        fence_value,
-        fence_event,
-    })
 }
 
 fn populate_command_list(resources: &SceneResources) -> Result<()> {
@@ -505,8 +398,8 @@ fn transition_barrier(
 pub struct Renderer {
     hwnd: HWND,
     dxgi_factory: IDXGIFactory5,
-    device: ID3D12Device,
-    scene_resources: Option<SceneResources>,
+    device: ID3D12Device4,
+    scene_resources: SceneResources,
 }
 
 impl Renderer {
@@ -528,33 +421,155 @@ impl Renderer {
 
         let device = create_device(&adapter, feature_level)?;
 
-        let mut renderer = Renderer {
+        let (width, height) = window_size;
+        let command_queue: ID3D12CommandQueue = unsafe {
+            device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
+                Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
+                ..Default::default()
+            })
+        }?;
+
+        let swap_chain_desc = DXGI_SWAP_CHAIN_DESC1 {
+            BufferCount: FRAME_COUNT,
+            Width: width,
+            Height: height,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let swap_chain: IDXGISwapChain3 = unsafe {
+            dxgi_factory.CreateSwapChainForHwnd(
+                &command_queue,
+                hwnd,
+                &swap_chain_desc,
+                std::ptr::null_mut(),
+                None,
+            )?
+        }
+        .cast()?;
+
+        unsafe {
+            dxgi_factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER)?;
+        }
+
+        let frame_index = unsafe { swap_chain.GetCurrentBackBufferIndex() };
+
+        let rtv_heap: ID3D12DescriptorHeap = unsafe {
+            device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                NumDescriptors: FRAME_COUNT,
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                ..Default::default()
+            })
+        }?;
+
+        let rtv_descriptor_size =
+            unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) }
+                as usize;
+        let rtv_handle = unsafe { rtv_heap.GetCPUDescriptorHandleForHeapStart() };
+
+        let render_targets: [ID3D12Resource; FRAME_COUNT as usize] =
+            array_init::try_array_init(|i: usize| -> Result<ID3D12Resource> {
+                let render_target: ID3D12Resource = unsafe { swap_chain.GetBuffer(i as u32) }?;
+                unsafe {
+                    device.CreateRenderTargetView(
+                        &render_target,
+                        std::ptr::null(),
+                        D3D12_CPU_DESCRIPTOR_HANDLE {
+                            ptr: rtv_handle.ptr + i * rtv_descriptor_size,
+                        },
+                    )
+                };
+                Ok(render_target)
+            })?;
+
+        let viewport = D3D12_VIEWPORT {
+            TopLeftX: 0.0,
+            TopLeftY: 0.0,
+            Width: width as f32,
+            Height: height as f32,
+            MinDepth: D3D12_MIN_DEPTH,
+            MaxDepth: D3D12_MAX_DEPTH,
+        };
+
+        let scissor_rect = RECT {
+            left: 0,
+            top: 0,
+            right: width as i32,
+            bottom: height as i32,
+        };
+
+        let command_allocator: ID3D12CommandAllocator =
+            unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }?;
+
+        let root_signature = create_root_signature(&device)?;
+
+        let vertex_shader = compile_vertex_shader("src/shaders/triangle.hlsl", "VSMain")?;
+        let pixel_shader = compile_pixel_shader("src/shaders/triangle.hlsl", "PSMain")?;
+
+        let pso = create_pipeline_state(&device, &root_signature, &vertex_shader, &pixel_shader)?;
+
+        let command_list: ID3D12GraphicsCommandList = unsafe {
+            device.CreateCommandList1(
+                0,
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                D3D12_COMMAND_LIST_FLAG_NONE,
+            )
+        }?;
+
+        let aspect_ratio = (width as f32) / (height as f32);
+
+        let (vertex_buffer, vbv) = create_vertex_buffer(&device, aspect_ratio)?;
+
+        let fence = unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE) }?;
+        let fence_value = 1;
+        let fence_event = unsafe { CreateEventA(std::ptr::null(), false, false, None) }?;
+
+        let renderer = Renderer {
             hwnd,
             dxgi_factory,
             device,
-            scene_resources: None,
+            scene_resources: SceneResources {
+                command_queue,
+                swap_chain,
+                frame_index,
+                render_targets,
+                rtv_heap,
+                rtv_descriptor_size,
+                viewport,
+                scissor_rect,
+                command_allocator,
+                root_signature,
+                pso,
+                command_list,
+                vertex_buffer,
+                vbv,
+                fence,
+                fence_value,
+                fence_event,
+            },
         };
-
-        let scene_resources = bind_to_window(&renderer, window_size)?;
-        renderer.scene_resources = Some(scene_resources);
 
         Ok(renderer)
     }
     pub fn render(&mut self) -> Result<()> {
-        if let Some(resources) = &mut self.scene_resources {
-            populate_command_list(resources)?;
+        populate_command_list(&self.scene_resources)?;
 
-            let command_list = ID3D12CommandList::from(&resources.command_list);
-            unsafe {
-                resources
-                    .command_queue
-                    .ExecuteCommandLists(&[Some(command_list)])
-            };
+        let command_list = ID3D12CommandList::from(&self.scene_resources.command_list);
+        unsafe {
+            self.scene_resources
+                .command_queue
+                .ExecuteCommandLists(&[Some(command_list)])
+        };
 
-            unsafe { resources.swap_chain.Present(1, 0) }.ok()?;
+        unsafe { self.scene_resources.swap_chain.Present(1, 0) }.ok()?;
 
-            wait_for_previous_frame(resources)?;
-        }
+        wait_for_previous_frame(&mut self.scene_resources)?;
 
         Ok(())
     }
