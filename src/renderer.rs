@@ -302,80 +302,6 @@ fn create_vertex_buffer(
     Ok((vertex_buffer, vbv))
 }
 
-struct SceneResources {
-    command_queue: ID3D12CommandQueue,
-    swap_chain: IDXGISwapChain3,
-    frame_index: u32,
-    render_targets: [ID3D12Resource; FRAME_COUNT as usize],
-    rtv_heap: ID3D12DescriptorHeap,
-    rtv_descriptor_size: usize,
-    viewport: D3D12_VIEWPORT,
-    scissor_rect: RECT,
-    command_allocator: ID3D12CommandAllocator,
-    root_signature: ID3D12RootSignature,
-    pso: ID3D12PipelineState,
-    command_list: ID3D12GraphicsCommandList,
-
-    #[allow(dead_code)]
-    vertex_buffer: ID3D12Resource,
-    vbv: D3D12_VERTEX_BUFFER_VIEW,
-    fence: ID3D12Fence,
-    fence_value: u64,
-    fence_event: HANDLE,
-}
-
-fn populate_command_list(resources: &SceneResources) -> Result<()> {
-    unsafe {
-        resources.command_allocator.Reset()?;
-    }
-
-    let command_list = &resources.command_list;
-    unsafe {
-        command_list.Reset(&resources.command_allocator, &resources.pso)?;
-    }
-
-    unsafe {
-        command_list.SetGraphicsRootSignature(&resources.root_signature);
-        command_list.RSSetViewports(&[resources.viewport]);
-        command_list.RSSetScissorRects(&[resources.scissor_rect]);
-    }
-
-    let barrier = transition_barrier(
-        &resources.render_targets[resources.frame_index as usize],
-        D3D12_RESOURCE_STATE_PRESENT,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-    );
-    unsafe { command_list.ResourceBarrier(&[barrier]) };
-
-    let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE {
-        ptr: unsafe { resources.rtv_heap.GetCPUDescriptorHandleForHeapStart() }.ptr
-            + resources.frame_index as usize * resources.rtv_descriptor_size,
-    };
-
-    unsafe {
-        command_list.OMSetRenderTargets(1, &rtv_handle, false, std::ptr::null());
-    }
-
-    unsafe {
-        command_list.ClearRenderTargetView(rtv_handle, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
-        command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        command_list.IASetVertexBuffers(0, &[resources.vbv]);
-        command_list.DrawInstanced(3, 1, 0, 0);
-
-        command_list.ResourceBarrier(&[transition_barrier(
-            &resources.render_targets[resources.frame_index as usize],
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_PRESENT,
-        )]);
-    }
-
-    unsafe {
-        command_list.Close()?;
-    }
-
-    Ok(())
-}
-
 fn transition_barrier(
     resource: &ID3D12Resource,
     state_before: D3D12_RESOURCE_STATES,
@@ -399,7 +325,25 @@ pub struct Renderer {
     hwnd: HWND,
     dxgi_factory: IDXGIFactory5,
     device: ID3D12Device4,
-    scene_resources: SceneResources,
+
+    command_queue: ID3D12CommandQueue,
+    swap_chain: IDXGISwapChain3,
+    frame_index: u32,
+    render_targets: [ID3D12Resource; FRAME_COUNT as usize],
+    rtv_heap: ID3D12DescriptorHeap,
+    rtv_descriptor_size: usize,
+    viewport: D3D12_VIEWPORT,
+    scissor_rect: RECT,
+    command_allocators: [ID3D12CommandAllocator; FRAME_COUNT as usize],
+    root_signature: ID3D12RootSignature,
+    pso: ID3D12PipelineState,
+    command_list: ID3D12GraphicsCommandList,
+    fence: ID3D12Fence,
+    fence_values: [u64; FRAME_COUNT as usize],
+    fence_event: HANDLE,
+
+    vertex_buffer: ID3D12Resource,
+    vbv: D3D12_VERTEX_BUFFER_VIEW,
 }
 
 impl Renderer {
@@ -504,8 +448,12 @@ impl Renderer {
             bottom: height as i32,
         };
 
-        let command_allocator: ID3D12CommandAllocator =
-            unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }?;
+        let command_allocators: [ID3D12CommandAllocator; FRAME_COUNT as usize] =
+            array_init::try_array_init(|_| -> Result<ID3D12CommandAllocator> {
+                let allocator =
+                    unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }?;
+                Ok(allocator)
+            })?;
 
         let root_signature = create_root_signature(&device)?;
 
@@ -526,71 +474,152 @@ impl Renderer {
 
         let (vertex_buffer, vbv) = create_vertex_buffer(&device, aspect_ratio)?;
 
-        let fence = unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE) }?;
-        let fence_value = 1;
+        let mut fence_values = [0; 2];
+
+        let fence = unsafe {
+            device.CreateFence(fence_values[frame_index as usize], D3D12_FENCE_FLAG_NONE)
+        }?;
+
+        fence_values[frame_index as usize] += 1;
+
         let fence_event = unsafe { CreateEventA(std::ptr::null(), false, false, None) }?;
 
-        let renderer = Renderer {
+        let mut renderer = Renderer {
             hwnd,
             dxgi_factory,
             device,
-            scene_resources: SceneResources {
-                command_queue,
-                swap_chain,
-                frame_index,
-                render_targets,
-                rtv_heap,
-                rtv_descriptor_size,
-                viewport,
-                scissor_rect,
-                command_allocator,
-                root_signature,
-                pso,
-                command_list,
-                vertex_buffer,
-                vbv,
-                fence,
-                fence_value,
-                fence_event,
-            },
+
+            command_queue,
+            swap_chain,
+            frame_index,
+            render_targets,
+            rtv_heap,
+            rtv_descriptor_size,
+            viewport,
+            scissor_rect,
+            command_allocators,
+            root_signature,
+            pso,
+            command_list,
+            vertex_buffer,
+            vbv,
+            fence,
+            fence_values,
+            fence_event,
         };
+
+        renderer.wait_for_gpu()?;
 
         Ok(renderer)
     }
-    pub fn render(&mut self) -> Result<()> {
-        populate_command_list(&self.scene_resources)?;
 
-        let command_list = ID3D12CommandList::from(&self.scene_resources.command_list);
+    fn populate_command_list(&self) -> Result<()> {
+        let command_allocator = &self.command_allocators[self.frame_index as usize];
         unsafe {
-            self.scene_resources
-                .command_queue
-                .ExecuteCommandLists(&[Some(command_list)])
+            command_allocator.Reset()?;
+        }
+
+        let command_list = &self.command_list;
+        unsafe {
+            command_list.Reset(command_allocator, &self.pso)?;
+        }
+
+        unsafe {
+            command_list.SetGraphicsRootSignature(&self.root_signature);
+            command_list.RSSetViewports(&[self.viewport]);
+            command_list.RSSetScissorRects(&[self.scissor_rect]);
+        }
+
+        let barrier = transition_barrier(
+            &self.render_targets[self.frame_index as usize],
+            D3D12_RESOURCE_STATE_PRESENT,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+        );
+        unsafe { command_list.ResourceBarrier(&[barrier]) };
+
+        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE {
+            ptr: unsafe { self.rtv_heap.GetCPUDescriptorHandleForHeapStart() }.ptr
+                + self.frame_index as usize * self.rtv_descriptor_size,
         };
 
-        unsafe { self.scene_resources.swap_chain.Present(1, 0) }.ok()?;
+        unsafe {
+            command_list.OMSetRenderTargets(1, &rtv_handle, false, std::ptr::null());
+        }
 
-        wait_for_previous_frame(&mut self.scene_resources)?;
+        unsafe {
+            command_list.ClearRenderTargetView(rtv_handle, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
+            command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            command_list.IASetVertexBuffers(0, &[self.vbv]);
+            command_list.DrawInstanced(3, 1, 0, 0);
+
+            command_list.ResourceBarrier(&[transition_barrier(
+                &self.render_targets[self.frame_index as usize],
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PRESENT,
+            )]);
+        }
+
+        unsafe {
+            command_list.Close()?;
+        }
 
         Ok(())
     }
-}
 
-fn wait_for_previous_frame(resources: &mut SceneResources) -> Result<()> {
-    let fence = resources.fence_value;
-    unsafe { resources.command_queue.Signal(&resources.fence, fence) }?;
+    fn wait_for_gpu(&mut self) -> Result<()> {
+        let fence = &self.fence;
+        let frame_index = self.frame_index as usize;
+        let fence_value = &mut self.fence_values[frame_index];
 
-    resources.fence_value += 1;
-
-    if unsafe { resources.fence.GetCompletedValue() } < fence {
         unsafe {
-            resources
-                .fence
-                .SetEventOnCompletion(fence, resources.fence_event)
-        }?;
-        unsafe { WaitForSingleObject(resources.fence_event, INFINITE) };
+            self.command_queue.Signal(fence, *fence_value)?;
+
+            self.fence
+                .SetEventOnCompletion(*fence_value, self.fence_event)?;
+
+            WaitForSingleObject(self.fence_event, INFINITE);
+        }
+
+        *fence_value += 1;
+
+        Ok(())
     }
 
-    resources.frame_index = unsafe { resources.swap_chain.GetCurrentBackBufferIndex() };
+    fn move_to_next_frame(&mut self) -> Result<()> {
+        let current_fence_value = self.fence_values[self.frame_index as usize];
 
-    Ok(())
+        unsafe { self.command_queue.Signal(&self.fence, current_fence_value) }?;
+
+        self.frame_index = unsafe { self.swap_chain.GetCurrentBackBufferIndex() };
+
+        let completed_value = unsafe { self.fence.GetCompletedValue() };
+        if completed_value < self.fence_values[self.frame_index as usize] {
+            unsafe {
+                self.fence.SetEventOnCompletion(
+                    self.fence_values[self.frame_index as usize],
+                    self.fence_event,
+                )?;
+                WaitForSingleObject(self.fence_event, INFINITE);
+            }
+        }
+        self.fence_values[self.frame_index as usize] = current_fence_value + 1;
+
+        Ok(())
+    }
+
+    pub fn render(&mut self) -> Result<()> {
+        self.populate_command_list()?;
+
+        let command_list = ID3D12CommandList::from(&self.command_list);
+        unsafe {
+            self.command_queue
+                .ExecuteCommandLists(&[Some(command_list)])
+        };
+
+        unsafe { self.swap_chain.Present(1, 0) }.ok()?;
+
+        self.move_to_next_frame()?;
+
+        Ok(())
+    }
 }
