@@ -1,3 +1,7 @@
+cbuffer Camera : register(b0) {
+    float4x4 m;
+}
+
 struct PSInput
 {
     float4 position : SV_POSITION;
@@ -8,8 +12,8 @@ PSInput VSMain(float4 position : POSITION, float4 color : COLOR)
 {
     PSInput result;
 
-    result.position = position;
-    result.color = color;
+    result.position = mul(m, position);
+    result.color = mul(m, color);
 
     return result;
 }

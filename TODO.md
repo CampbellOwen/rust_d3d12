@@ -1,9 +1,10 @@
 # TODO
 
 - [ ] Load mesh
-  - [ ] Matrices
+  - [x] Matrices
   - [ ] Proper vertex buffers (staging heap, then copy to non-cpu visible heap)
-  - [ ] Constant buffers
+  - [x] Index buffer
+  - [x] Constant buffers
 - [ ] Precompiled shaders
 - [ ] Shader reflection
 - [ ] Depth buffer

@@ -1,3 +1,5 @@
+use std::ffi::c_void;
+
 use anyhow::{Context, Ok, Result};
 use hassle_rs::{compile_hlsl, validate_dxil};
 
@@ -62,7 +64,28 @@ fn create_device(
 }
 
 fn create_root_signature(device: &ID3D12Device4) -> Result<ID3D12RootSignature> {
+    let descriptor_ranges = [D3D12_DESCRIPTOR_RANGE {
+        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+        NumDescriptors: 1,
+        BaseShaderRegister: 0,
+        RegisterSpace: 0,
+        OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+    }];
+
+    let root_parameters = [D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                NumDescriptorRanges: 1,
+                pDescriptorRanges: descriptor_ranges.as_ptr(),
+            },
+        },
+    }];
+
     let desc = D3D12_ROOT_SIGNATURE_DESC {
+        NumParameters: 1,
+        pParameters: root_parameters.as_ptr(),
         Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
         ..Default::default()
     };
@@ -235,25 +258,10 @@ struct Vertex {
     color: [f32; 4],
 }
 
-fn create_vertex_buffer(
+fn create_vertex_buffer<T: Sized>(
     device: &ID3D12Device4,
-    aspect_ratio: f32,
+    vertices: &[T],
 ) -> Result<(ID3D12Resource, D3D12_VERTEX_BUFFER_VIEW)> {
-    let vertices = [
-        Vertex {
-            position: [0.0, 0.25 * aspect_ratio, 0.0, 1.0],
-            color: [1.0, 0.0, 0.0, 1.0],
-        },
-        Vertex {
-            position: [0.25, -0.25 * aspect_ratio, 0.0, 1.0],
-            color: [0.0, 1.0, 0.0, 1.0],
-        },
-        Vertex {
-            position: [-0.25, -0.25 * aspect_ratio, 0.0, 1.0],
-            color: [0.0, 0.0, 1.0, 1.0],
-        },
-    ];
-
     let mut vertex_buffer: Option<ID3D12Resource> = None;
     unsafe {
         device.CreateCommittedResource(
@@ -264,7 +272,7 @@ fn create_vertex_buffer(
             D3D12_HEAP_FLAG_NONE,
             &D3D12_RESOURCE_DESC {
                 Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                Width: std::mem::size_of_val(&vertices) as u64,
+                Width: std::mem::size_of_val(vertices) as u64,
                 Height: 1,
                 DepthOrArraySize: 1,
                 MipLevels: 1,
@@ -287,8 +295,8 @@ fn create_vertex_buffer(
         vertex_buffer.Map(0, std::ptr::null(), &mut data)?;
         std::ptr::copy_nonoverlapping(
             vertices.as_ptr(),
-            data as *mut Vertex,
-            std::mem::size_of_val(&vertices),
+            data as *mut T,
+            std::mem::size_of_val(vertices),
         );
         vertex_buffer.Unmap(0, std::ptr::null());
     }
@@ -296,7 +304,7 @@ fn create_vertex_buffer(
     let vbv = D3D12_VERTEX_BUFFER_VIEW {
         BufferLocation: unsafe { vertex_buffer.GetGPUVirtualAddress() },
         StrideInBytes: std::mem::size_of::<Vertex>() as u32,
-        SizeInBytes: std::mem::size_of_val(&vertices) as u32,
+        SizeInBytes: std::mem::size_of_val(vertices) as u32,
     };
 
     Ok((vertex_buffer, vbv))
@@ -304,9 +312,8 @@ fn create_vertex_buffer(
 
 fn create_index_buffer(
     device: &ID3D12Device4,
+    indices: &[u32],
 ) -> Result<(ID3D12Resource, D3D12_INDEX_BUFFER_VIEW)> {
-    let indices = [0, 1, 2];
-
     let mut index_buffer: Option<ID3D12Resource> = None;
     unsafe {
         device.CreateCommittedResource(
@@ -317,7 +324,7 @@ fn create_index_buffer(
             D3D12_HEAP_FLAG_NONE,
             &D3D12_RESOURCE_DESC {
                 Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                Width: std::mem::size_of_val(&indices) as u64,
+                Width: std::mem::size_of_val(indices) as u64,
                 Height: 1,
                 DepthOrArraySize: 1,
                 MipLevels: 1,
@@ -342,7 +349,7 @@ fn create_index_buffer(
         std::ptr::copy_nonoverlapping(
             indices.as_ptr(),
             data as *mut u32,
-            std::mem::size_of_val(&indices),
+            std::mem::size_of_val(indices),
         );
 
         index_buffer.Unmap(0, std::ptr::null());
@@ -350,11 +357,64 @@ fn create_index_buffer(
 
     let ibv = D3D12_INDEX_BUFFER_VIEW {
         BufferLocation: unsafe { index_buffer.GetGPUVirtualAddress() },
-        SizeInBytes: std::mem::size_of_val(&indices) as u32,
+        SizeInBytes: std::mem::size_of_val(indices) as u32,
         Format: DXGI_FORMAT_R32_UINT,
     };
 
     Ok((index_buffer, ibv))
+}
+
+fn align_data(location: usize, alignment: usize) -> usize {
+    if alignment == 0 || (alignment & (alignment - 1) != 0) {
+        panic!("Non power of 2 alignment");
+    }
+
+    (location + (alignment - 1)) & !(alignment - 1)
+}
+
+struct MappedBuffer {
+    buffer: ID3D12Resource,
+    size: usize,
+    data: *mut c_void,
+}
+
+fn create_constant_buffer(device: &ID3D12Device4, size: usize) -> Result<MappedBuffer> {
+    let mut constant_buffer: Option<ID3D12Resource> = None;
+    unsafe {
+        device.CreateCommittedResource(
+            &D3D12_HEAP_PROPERTIES {
+                Type: D3D12_HEAP_TYPE_UPLOAD,
+                ..Default::default()
+            },
+            D3D12_HEAP_FLAG_NONE,
+            &D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                Width: size as u64,
+                Height: 1,
+                DepthOrArraySize: 1,
+                MipLevels: 1,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                ..Default::default()
+            },
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            std::ptr::null(),
+            &mut constant_buffer,
+        )?;
+    }
+    let constant_buffer = constant_buffer.unwrap();
+
+    let mut p_data = std::ptr::null_mut();
+    unsafe { constant_buffer.Map(0, std::ptr::null(), &mut p_data)? };
+
+    Ok(MappedBuffer {
+        buffer: constant_buffer,
+        size,
+        data: p_data,
+    })
 }
 
 fn transition_barrier(
@@ -376,6 +436,100 @@ fn transition_barrier(
     }
 }
 
+pub struct DescriptorHeap {
+    heap: ID3D12DescriptorHeap,
+    descriptor_size: usize,
+    num_descriptors: u32,
+
+    num_allocated: u32,
+}
+
+impl DescriptorHeap {
+    fn create_heap(
+        device: &ID3D12Device4,
+        num_descriptors: u32,
+        heap_type: D3D12_DESCRIPTOR_HEAP_TYPE,
+        flags: D3D12_DESCRIPTOR_HEAP_FLAGS,
+    ) -> Result<DescriptorHeap> {
+        let heap: ID3D12DescriptorHeap = unsafe {
+            device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                NumDescriptors: num_descriptors,
+                Type: heap_type,
+                Flags: flags,
+                ..Default::default()
+            })
+        }?;
+
+        let rtv_descriptor_size =
+            unsafe { device.GetDescriptorHandleIncrementSize(heap_type) } as usize;
+
+        Ok(DescriptorHeap {
+            heap: heap,
+            descriptor_size: rtv_descriptor_size,
+            num_descriptors: num_descriptors,
+            num_allocated: 0,
+        })
+    }
+
+    pub fn constant_buffer_view_heap(
+        device: &ID3D12Device4,
+        num_descriptors: u32,
+    ) -> Result<DescriptorHeap> {
+        Self::create_heap(
+            device,
+            num_descriptors,
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+            D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+        )
+    }
+
+    pub fn render_target_view_heap(
+        device: &ID3D12Device4,
+        num_descriptors: u32,
+    ) -> Result<DescriptorHeap> {
+        Self::create_heap(
+            device,
+            num_descriptors,
+            D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+            D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+        )
+    }
+
+    pub fn allocate_handle(&mut self) -> Result<D3D12_CPU_DESCRIPTOR_HANDLE> {
+        anyhow::ensure!(
+            self.num_allocated < self.num_descriptors,
+            "Not enough descriptors"
+        );
+
+        let heap_start_handle = unsafe { self.heap.GetCPUDescriptorHandleForHeapStart() };
+        let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
+            ptr: heap_start_handle.ptr + self.num_allocated as usize * self.descriptor_size,
+        };
+
+        self.num_allocated += 1;
+
+        Ok(handle)
+    }
+
+    pub fn get_cpu_handle(&self, index: u32) -> Result<D3D12_CPU_DESCRIPTOR_HANDLE> {
+        anyhow::ensure!(index < self.num_allocated, "index out of bounds");
+
+        let heap_start_handle = unsafe { self.heap.GetCPUDescriptorHandleForHeapStart() };
+        Ok(D3D12_CPU_DESCRIPTOR_HANDLE {
+            ptr: heap_start_handle.ptr + (index as usize * self.descriptor_size),
+        })
+    }
+
+    pub fn get_gpu_handle(&self, index: u32) -> Result<D3D12_GPU_DESCRIPTOR_HANDLE> {
+        anyhow::ensure!(index < self.num_allocated, "index out of bounds");
+
+        let heap_start_handle = unsafe { self.heap.GetGPUDescriptorHandleForHeapStart() };
+        Ok(D3D12_GPU_DESCRIPTOR_HANDLE {
+            ptr: heap_start_handle.ptr + (index as u64 * self.descriptor_size as u64),
+        })
+    }
+}
+
 pub struct Renderer {
     hwnd: HWND,
     dxgi_factory: IDXGIFactory5,
@@ -385,8 +539,8 @@ pub struct Renderer {
     swap_chain: IDXGISwapChain3,
     frame_index: u32,
     render_targets: [ID3D12Resource; FRAME_COUNT as usize],
-    rtv_heap: ID3D12DescriptorHeap,
-    rtv_descriptor_size: usize,
+    rtv_heap: DescriptorHeap,
+    cbv_heap: DescriptorHeap,
     viewport: D3D12_VIEWPORT,
     scissor_rect: RECT,
     command_allocators: [ID3D12CommandAllocator; FRAME_COUNT as usize],
@@ -402,6 +556,7 @@ pub struct Renderer {
 
     index_buffer: ID3D12Resource,
     ibv: D3D12_INDEX_BUFFER_VIEW,
+    constant_buffers: [MappedBuffer; FRAME_COUNT as usize],
 }
 
 impl Renderer {
@@ -462,18 +617,7 @@ impl Renderer {
 
         let frame_index = unsafe { swap_chain.GetCurrentBackBufferIndex() };
 
-        let rtv_heap: ID3D12DescriptorHeap = unsafe {
-            device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
-                NumDescriptors: FRAME_COUNT,
-                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                ..Default::default()
-            })
-        }?;
-
-        let rtv_descriptor_size =
-            unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) }
-                as usize;
-        let rtv_handle = unsafe { rtv_heap.GetCPUDescriptorHandleForHeapStart() };
+        let mut rtv_heap = DescriptorHeap::render_target_view_heap(&device, FRAME_COUNT)?;
 
         let render_targets: [ID3D12Resource; FRAME_COUNT as usize] =
             array_init::try_array_init(|i: usize| -> Result<ID3D12Resource> {
@@ -482,9 +626,7 @@ impl Renderer {
                     device.CreateRenderTargetView(
                         &render_target,
                         std::ptr::null(),
-                        D3D12_CPU_DESCRIPTOR_HANDLE {
-                            ptr: rtv_handle.ptr + i * rtv_descriptor_size,
-                        },
+                        rtv_heap.allocate_handle()?,
                     )
                 };
                 Ok(render_target)
@@ -530,8 +672,56 @@ impl Renderer {
 
         let aspect_ratio = (width as f32) / (height as f32);
 
-        let (vertex_buffer, vbv) = create_vertex_buffer(&device, aspect_ratio)?;
-        let (index_buffer, ibv) = create_index_buffer(&device)?;
+        let vertices = [
+            Vertex {
+                position: [0.0, 0.25 * aspect_ratio, 0.0, 1.0],
+                color: [1.0, 0.0, 0.0, 1.0],
+            },
+            Vertex {
+                position: [0.25, -0.25 * aspect_ratio, 0.0, 1.0],
+                color: [0.0, 1.0, 0.0, 1.0],
+            },
+            Vertex {
+                position: [-0.25, -0.25 * aspect_ratio, 0.0, 1.0],
+                color: [0.0, 0.0, 1.0, 1.0],
+            },
+        ];
+        let (vertex_buffer, vbv) = create_vertex_buffer(&device, &vertices)?;
+
+        let indices = [0, 1, 2];
+        let (index_buffer, ibv) = create_index_buffer(&device, &indices)?;
+
+        let mut cbv_heap = DescriptorHeap::constant_buffer_view_heap(&device, FRAME_COUNT)?;
+
+        let constant_buffer_size = align_data(
+            std::mem::size_of::<glam::Mat4>(),
+            D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
+        );
+        let constant_buffers: [MappedBuffer; FRAME_COUNT as usize] =
+            array_init::try_array_init(|_| {
+                let buffer = create_constant_buffer(&device, constant_buffer_size)?;
+
+                let matrix = glam::Mat4::IDENTITY;
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        std::ptr::addr_of!(matrix),
+                        buffer.data as _,
+                        std::mem::size_of_val(&matrix),
+                    )
+                };
+
+                unsafe {
+                    device.CreateConstantBufferView(
+                        &D3D12_CONSTANT_BUFFER_VIEW_DESC {
+                            BufferLocation: buffer.buffer.GetGPUVirtualAddress(),
+                            SizeInBytes: buffer.size as u32,
+                        },
+                        cbv_heap.allocate_handle()?,
+                    )
+                };
+
+                Ok(buffer)
+            })?;
 
         let mut fence_values = [0; 2];
 
@@ -553,7 +743,7 @@ impl Renderer {
             frame_index,
             render_targets,
             rtv_heap,
-            rtv_descriptor_size,
+            cbv_heap,
             viewport,
             scissor_rect,
             command_allocators,
@@ -567,6 +757,8 @@ impl Renderer {
             fence,
             fence_values,
             fence_event,
+
+            constant_buffers,
         };
 
         renderer.wait_for_gpu()?;
@@ -585,8 +777,14 @@ impl Renderer {
             command_list.Reset(command_allocator, &self.pso)?;
         }
 
+        let cbv_gpu_handle = self.cbv_heap.get_gpu_handle(self.frame_index)?;
+
         unsafe {
             command_list.SetGraphicsRootSignature(&self.root_signature);
+
+            command_list.SetDescriptorHeaps(&[Some(self.cbv_heap.heap.clone())]);
+            command_list.SetGraphicsRootDescriptorTable(0, cbv_gpu_handle);
+
             command_list.RSSetViewports(&[self.viewport]);
             command_list.RSSetScissorRects(&[self.scissor_rect]);
         }
@@ -598,10 +796,7 @@ impl Renderer {
         );
         unsafe { command_list.ResourceBarrier(&[barrier]) };
 
-        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE {
-            ptr: unsafe { self.rtv_heap.GetCPUDescriptorHandleForHeapStart() }.ptr
-                + self.frame_index as usize * self.rtv_descriptor_size,
-        };
+        let rtv_handle = self.rtv_heap.get_cpu_handle(self.frame_index)?;
 
         unsafe {
             command_list.OMSetRenderTargets(1, &rtv_handle, false, std::ptr::null());
