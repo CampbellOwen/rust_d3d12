@@ -464,9 +464,9 @@ impl DescriptorHeap {
             unsafe { device.GetDescriptorHandleIncrementSize(heap_type) } as usize;
 
         Ok(DescriptorHeap {
-            heap: heap,
+            heap,
             descriptor_size: rtv_descriptor_size,
-            num_descriptors: num_descriptors,
+            num_descriptors,
             num_allocated: 0,
         })
     }
@@ -531,8 +531,11 @@ impl DescriptorHeap {
 }
 
 pub struct Renderer {
+    #[allow(dead_code)]
     hwnd: HWND,
+    #[allow(dead_code)]
     dxgi_factory: IDXGIFactory5,
+    #[allow(dead_code)]
     device: ID3D12Device4,
 
     command_queue: ID3D12CommandQueue,
@@ -550,12 +553,13 @@ pub struct Renderer {
     fence: ID3D12Fence,
     fence_values: [u64; FRAME_COUNT as usize],
     fence_event: HANDLE,
-
-    vertex_buffer: ID3D12Resource,
     vbv: D3D12_VERTEX_BUFFER_VIEW,
-
-    index_buffer: ID3D12Resource,
     ibv: D3D12_INDEX_BUFFER_VIEW,
+    #[allow(dead_code)]
+    vertex_buffer: ID3D12Resource,
+    #[allow(dead_code)]
+    index_buffer: ID3D12Resource,
+    #[allow(dead_code)]
     constant_buffers: [MappedBuffer; FRAME_COUNT as usize],
 }
 
@@ -703,11 +707,7 @@ impl Renderer {
 
                 let matrix = glam::Mat4::IDENTITY;
                 unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        std::ptr::addr_of!(matrix),
-                        buffer.data as _,
-                        std::mem::size_of_val(&matrix),
-                    )
+                    std::ptr::copy_nonoverlapping(std::ptr::addr_of!(matrix), buffer.data as _, 1)
                 };
 
                 unsafe {
@@ -821,6 +821,11 @@ impl Renderer {
         }
 
         Ok(())
+    }
+
+    pub fn resize(&mut self, _size: (u32, u32)) {
+
+        // TODO: Implement this
     }
 
     fn wait_for_gpu(&mut self) -> Result<()> {

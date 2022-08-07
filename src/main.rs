@@ -25,6 +25,9 @@ fn main() {
         match event {
             Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
                 WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                WindowEvent::Resized(PhysicalSize { width, height }) => {
+                    renderer.resize((width, height))
+                }
                 _ => (),
             },
             Event::MainEventsCleared => renderer.render().unwrap(),
