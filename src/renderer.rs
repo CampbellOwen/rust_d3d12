@@ -302,6 +302,61 @@ fn create_vertex_buffer(
     Ok((vertex_buffer, vbv))
 }
 
+fn create_index_buffer(
+    device: &ID3D12Device4,
+) -> Result<(ID3D12Resource, D3D12_INDEX_BUFFER_VIEW)> {
+    let indices = [0, 1, 2];
+
+    let mut index_buffer: Option<ID3D12Resource> = None;
+    unsafe {
+        device.CreateCommittedResource(
+            &D3D12_HEAP_PROPERTIES {
+                Type: D3D12_HEAP_TYPE_UPLOAD,
+                ..Default::default()
+            },
+            D3D12_HEAP_FLAG_NONE,
+            &D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                Width: std::mem::size_of_val(&indices) as u64,
+                Height: 1,
+                DepthOrArraySize: 1,
+                MipLevels: 1,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                ..Default::default()
+            },
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            std::ptr::null(),
+            &mut index_buffer,
+        )
+    }?;
+
+    let index_buffer = index_buffer.unwrap();
+    unsafe {
+        let mut data = std::ptr::null_mut();
+        index_buffer.Map(0, std::ptr::null(), &mut data)?;
+
+        std::ptr::copy_nonoverlapping(
+            indices.as_ptr(),
+            data as *mut u32,
+            std::mem::size_of_val(&indices),
+        );
+
+        index_buffer.Unmap(0, std::ptr::null());
+    }
+
+    let ibv = D3D12_INDEX_BUFFER_VIEW {
+        BufferLocation: unsafe { index_buffer.GetGPUVirtualAddress() },
+        SizeInBytes: std::mem::size_of_val(&indices) as u32,
+        Format: DXGI_FORMAT_R32_UINT,
+    };
+
+    Ok((index_buffer, ibv))
+}
+
 fn transition_barrier(
     resource: &ID3D12Resource,
     state_before: D3D12_RESOURCE_STATES,
@@ -344,6 +399,9 @@ pub struct Renderer {
 
     vertex_buffer: ID3D12Resource,
     vbv: D3D12_VERTEX_BUFFER_VIEW,
+
+    index_buffer: ID3D12Resource,
+    ibv: D3D12_INDEX_BUFFER_VIEW,
 }
 
 impl Renderer {
@@ -473,6 +531,7 @@ impl Renderer {
         let aspect_ratio = (width as f32) / (height as f32);
 
         let (vertex_buffer, vbv) = create_vertex_buffer(&device, aspect_ratio)?;
+        let (index_buffer, ibv) = create_index_buffer(&device)?;
 
         let mut fence_values = [0; 2];
 
@@ -503,6 +562,8 @@ impl Renderer {
             command_list,
             vertex_buffer,
             vbv,
+            index_buffer,
+            ibv,
             fence,
             fence_values,
             fence_event,
@@ -550,7 +611,8 @@ impl Renderer {
             command_list.ClearRenderTargetView(rtv_handle, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
             command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             command_list.IASetVertexBuffers(0, &[self.vbv]);
-            command_list.DrawInstanced(3, 1, 0, 0);
+            command_list.IASetIndexBuffer(&self.ibv);
+            command_list.DrawIndexedInstanced(3, 1, 0, 0, 0);
 
             command_list.ResourceBarrier(&[transition_barrier(
                 &self.render_targets[self.frame_index as usize],
