@@ -10,6 +10,8 @@ use winit::{
 mod renderer;
 use renderer::Renderer;
 
+mod parse_obj;
+
 fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();

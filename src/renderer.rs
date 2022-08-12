@@ -14,6 +14,8 @@ use windows::Win32::System::WindowsProgramming::INFINITE;
 
 const FRAME_COUNT: u32 = 2;
 
+use crate::parse_obj::{parse_obj, ObjVertex};
+
 fn get_hardware_adapter(
     factory: &IDXGIFactory5,
     feature_level: D3D_FEATURE_LEVEL,
@@ -134,6 +136,18 @@ const SHADER_COMPILE_FLAGS: &[&str] = if cfg!(debug_assertions) {
     &[]
 };
 
+fn load_cube() -> Result<(Vec<ObjVertex>, Vec<u32>)> {
+    let cube_obj = std::fs::read_to_string(r"F:\Models\cube.obj")?;
+
+    parse_obj(cube_obj.lines())
+}
+
+fn load_bunny() -> Result<(Vec<ObjVertex>, Vec<u32>)> {
+    let obj = std::fs::read_to_string(r"F:\Models\bunny.obj")?;
+
+    parse_obj(obj.lines())
+}
+
 fn compile_shader(filename: &str, entry_point: &str, shader_model: &str) -> Result<CompiledShader> {
     let path = std::path::Path::new(filename);
 
@@ -175,22 +189,31 @@ fn create_pipeline_state(
     vertex_shader: &CompiledShader,
     pixel_shader: &CompiledShader,
 ) -> Result<ID3D12PipelineState> {
-    let input_element_descs: [D3D12_INPUT_ELEMENT_DESC; 2] = [
+    let input_element_descs: [D3D12_INPUT_ELEMENT_DESC; 3] = [
         D3D12_INPUT_ELEMENT_DESC {
             SemanticName: PCSTR(b"POSITION\0".as_ptr()),
             SemanticIndex: 0,
-            Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+            Format: DXGI_FORMAT_R32G32B32_FLOAT,
             InputSlot: 0,
             AlignedByteOffset: 0,
             InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
         D3D12_INPUT_ELEMENT_DESC {
-            SemanticName: PCSTR(b"COLOR\0".as_ptr()),
+            SemanticName: PCSTR(b"NORMAL\0".as_ptr()),
             SemanticIndex: 0,
-            Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+            Format: DXGI_FORMAT_R32G32B32_FLOAT,
             InputSlot: 0,
-            AlignedByteOffset: 16,
+            AlignedByteOffset: 12,
+            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
+        D3D12_INPUT_ELEMENT_DESC {
+            SemanticName: PCSTR(b"TEXCOORD\0".as_ptr()),
+            SemanticIndex: 0,
+            Format: DXGI_FORMAT_R32G32_FLOAT,
+            InputSlot: 0,
+            AlignedByteOffset: 24,
             InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
@@ -258,7 +281,7 @@ struct Vertex {
     color: [f32; 4],
 }
 
-fn create_vertex_buffer<T: Sized>(
+fn create_vertex_buffer<T: Sized + std::fmt::Debug>(
     device: &ID3D12Device4,
     vertices: &[T],
 ) -> Result<(ID3D12Resource, D3D12_VERTEX_BUFFER_VIEW)> {
@@ -294,8 +317,8 @@ fn create_vertex_buffer<T: Sized>(
         let mut data = std::ptr::null_mut();
         vertex_buffer.Map(0, std::ptr::null(), &mut data)?;
         std::ptr::copy_nonoverlapping(
-            vertices.as_ptr(),
-            data as *mut T,
+            vertices.as_ptr() as *mut u8,
+            data as *mut u8,
             std::mem::size_of_val(vertices),
         );
         vertex_buffer.Unmap(0, std::ptr::null());
@@ -347,8 +370,8 @@ fn create_index_buffer(
         index_buffer.Map(0, std::ptr::null(), &mut data)?;
 
         std::ptr::copy_nonoverlapping(
-            indices.as_ptr(),
-            data as *mut u32,
+            indices.as_ptr() as *mut u8,
+            data as *mut u8,
             std::mem::size_of_val(indices),
         );
 
@@ -676,7 +699,7 @@ impl Renderer {
 
         let aspect_ratio = (width as f32) / (height as f32);
 
-        let vertices = [
+        let _vertices = [
             Vertex {
                 position: [0.0, 0.25 * aspect_ratio, 0.0, 1.0],
                 color: [1.0, 0.0, 0.0, 1.0],
@@ -690,10 +713,16 @@ impl Renderer {
                 color: [0.0, 0.0, 1.0, 1.0],
             },
         ];
-        let (vertex_buffer, vbv) = create_vertex_buffer(&device, &vertices)?;
+        let _indices = [0, 1, 2];
 
-        let indices = [0, 1, 2];
+        //let (vertices, indices) = load_cube()?;
+        let (vertices, indices) = load_bunny()?;
+
+        let (vertex_buffer, vbv) = create_vertex_buffer(&device, &vertices)?;
+        println!("After vertex buffer");
+
         let (index_buffer, ibv) = create_index_buffer(&device, &indices)?;
+        println!("After index buffer");
 
         let mut cbv_heap = DescriptorHeap::constant_buffer_view_heap(&device, FRAME_COUNT)?;
 
@@ -807,7 +836,7 @@ impl Renderer {
             command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             command_list.IASetVertexBuffers(0, &[self.vbv]);
             command_list.IASetIndexBuffer(&self.ibv);
-            command_list.DrawIndexedInstanced(3, 1, 0, 0, 0);
+            command_list.DrawIndexedInstanced(432138, 1, 0, 0, 0);
 
             command_list.ResourceBarrier(&[transition_barrier(
                 &self.render_targets[self.frame_index as usize],

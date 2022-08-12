@@ -11,6 +11,8 @@ winit = "0.27.1"
 anyhow = "1.0.58"
 array-init = "2.0.1"
 glam = "0.21.3"
+regex = "1.6.0"
+lazy_static = "1.4.0"
 
 [dependencies.windows]
 version = "0.39.0"
