@@ -832,7 +832,7 @@ impl Renderer {
         let mut cbv_heap = DescriptorHeap::constant_buffer_view_heap(&device, FRAME_COUNT)?;
 
         let constant_buffer = [
-            glam::Mat4::from_translation(Vec3::new(0.0, -1.0, 2.0))
+            glam::Mat4::from_translation(Vec3::new(0.0, -1.0, 1.5))
                 * glam::Mat4::from_rotation_y(PI),
             glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
         ];
