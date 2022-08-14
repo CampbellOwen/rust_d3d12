@@ -1,6 +1,8 @@
+use std::f32::consts::PI;
 use std::ffi::c_void;
 
-use anyhow::{Context, Ok, Result};
+use anyhow::{ensure, Context, Ok, Result};
+use glam::Vec3;
 use hassle_rs::{compile_hlsl, validate_dxil};
 
 use windows::core::{Interface, PCSTR};
@@ -395,6 +397,7 @@ fn align_data(location: usize, alignment: usize) -> usize {
     (location + (alignment - 1)) & !(alignment - 1)
 }
 
+#[derive(Debug)]
 struct MappedBuffer {
     buffer: ID3D12Resource,
     size: usize,
@@ -459,6 +462,7 @@ fn transition_barrier(
     }
 }
 
+#[derive(Debug)]
 pub struct DescriptorHeap {
     heap: ID3D12DescriptorHeap,
     descriptor_size: usize,
@@ -553,7 +557,8 @@ impl DescriptorHeap {
     }
 }
 
-pub struct Renderer {
+#[derive(Debug)]
+struct RendererResources {
     #[allow(dead_code)]
     hwnd: HWND,
     #[allow(dead_code)]
@@ -586,7 +591,16 @@ pub struct Renderer {
     constant_buffers: [MappedBuffer; FRAME_COUNT as usize],
 }
 
+#[derive(Debug)]
+pub struct Renderer {
+    resources: Option<RendererResources>,
+}
+
 impl Renderer {
+    pub fn null() -> Renderer {
+        Renderer { resources: None }
+    }
+
     pub fn new(hwnd: HWND, window_size: (u32, u32)) -> Result<Renderer> {
         if cfg!(debug_assertions) {
             unsafe {
@@ -719,24 +733,30 @@ impl Renderer {
         let (vertices, indices) = load_bunny()?;
 
         let (vertex_buffer, vbv) = create_vertex_buffer(&device, &vertices)?;
-        println!("After vertex buffer");
 
         let (index_buffer, ibv) = create_index_buffer(&device, &indices)?;
-        println!("After index buffer");
 
         let mut cbv_heap = DescriptorHeap::constant_buffer_view_heap(&device, FRAME_COUNT)?;
 
+        let constant_buffer = [
+            glam::Mat4::from_translation(Vec3::new(0.0, 0.0, 5.0)),
+            glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
+        ];
         let constant_buffer_size = align_data(
-            std::mem::size_of::<glam::Mat4>(),
+            std::mem::size_of_val(&constant_buffer),
             D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
         );
         let constant_buffers: [MappedBuffer; FRAME_COUNT as usize] =
             array_init::try_array_init(|_| {
                 let buffer = create_constant_buffer(&device, constant_buffer_size)?;
 
-                let matrix = glam::Mat4::IDENTITY;
+                //let matrix = glam::Mat4::IDENTITY;
                 unsafe {
-                    std::ptr::copy_nonoverlapping(std::ptr::addr_of!(matrix), buffer.data as _, 1)
+                    std::ptr::copy_nonoverlapping(
+                        std::ptr::addr_of!(constant_buffer),
+                        buffer.data as _,
+                        1,
+                    )
                 };
 
                 unsafe {
@@ -762,7 +782,7 @@ impl Renderer {
 
         let fence_event = unsafe { CreateEventA(std::ptr::null(), false, false, None) }?;
 
-        let mut renderer = Renderer {
+        let resources = RendererResources {
             hwnd,
             dxgi_factory,
             device,
@@ -790,42 +810,49 @@ impl Renderer {
             constant_buffers,
         };
 
+        let mut renderer = Renderer {
+            resources: Some(resources),
+        };
+
         renderer.wait_for_gpu()?;
 
         Ok(renderer)
     }
 
     fn populate_command_list(&self) -> Result<()> {
-        let command_allocator = &self.command_allocators[self.frame_index as usize];
+        ensure!(self.resources.is_some());
+        let resources = self.resources.as_ref().unwrap();
+
+        let command_allocator = &resources.command_allocators[resources.frame_index as usize];
         unsafe {
             command_allocator.Reset()?;
         }
 
-        let command_list = &self.command_list;
+        let command_list = &resources.command_list;
         unsafe {
-            command_list.Reset(command_allocator, &self.pso)?;
+            command_list.Reset(command_allocator, &resources.pso)?;
         }
 
-        let cbv_gpu_handle = self.cbv_heap.get_gpu_handle(self.frame_index)?;
+        let cbv_gpu_handle = resources.cbv_heap.get_gpu_handle(resources.frame_index)?;
 
         unsafe {
-            command_list.SetGraphicsRootSignature(&self.root_signature);
+            command_list.SetGraphicsRootSignature(&resources.root_signature);
 
-            command_list.SetDescriptorHeaps(&[Some(self.cbv_heap.heap.clone())]);
+            command_list.SetDescriptorHeaps(&[Some(resources.cbv_heap.heap.clone())]);
             command_list.SetGraphicsRootDescriptorTable(0, cbv_gpu_handle);
 
-            command_list.RSSetViewports(&[self.viewport]);
-            command_list.RSSetScissorRects(&[self.scissor_rect]);
+            command_list.RSSetViewports(&[resources.viewport]);
+            command_list.RSSetScissorRects(&[resources.scissor_rect]);
         }
 
         let barrier = transition_barrier(
-            &self.render_targets[self.frame_index as usize],
+            &resources.render_targets[resources.frame_index as usize],
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
         );
         unsafe { command_list.ResourceBarrier(&[barrier]) };
 
-        let rtv_handle = self.rtv_heap.get_cpu_handle(self.frame_index)?;
+        let rtv_handle = resources.rtv_heap.get_cpu_handle(resources.frame_index)?;
 
         unsafe {
             command_list.OMSetRenderTargets(1, &rtv_handle, false, std::ptr::null());
@@ -834,12 +861,12 @@ impl Renderer {
         unsafe {
             command_list.ClearRenderTargetView(rtv_handle, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
             command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            command_list.IASetVertexBuffers(0, &[self.vbv]);
-            command_list.IASetIndexBuffer(&self.ibv);
+            command_list.IASetVertexBuffers(0, &[resources.vbv]);
+            command_list.IASetIndexBuffer(&resources.ibv);
             command_list.DrawIndexedInstanced(432138, 1, 0, 0, 0);
 
             command_list.ResourceBarrier(&[transition_barrier(
-                &self.render_targets[self.frame_index as usize],
+                &resources.render_targets[resources.frame_index as usize],
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
             )]);
@@ -857,18 +884,21 @@ impl Renderer {
         // TODO: Implement this
     }
 
-    fn wait_for_gpu(&mut self) -> Result<()> {
-        let fence = &self.fence;
-        let frame_index = self.frame_index as usize;
-        let fence_value = &mut self.fence_values[frame_index];
+    pub fn wait_for_gpu(&mut self) -> Result<()> {
+        ensure!(self.resources.is_some());
+        let resources = self.resources.as_mut().unwrap();
+        let fence = &resources.fence;
+        let frame_index = resources.frame_index as usize;
+        let fence_value = &mut resources.fence_values[frame_index];
 
         unsafe {
-            self.command_queue.Signal(fence, *fence_value)?;
+            resources.command_queue.Signal(fence, *fence_value)?;
 
-            self.fence
-                .SetEventOnCompletion(*fence_value, self.fence_event)?;
+            resources
+                .fence
+                .SetEventOnCompletion(*fence_value, resources.fence_event)?;
 
-            WaitForSingleObject(self.fence_event, INFINITE);
+            WaitForSingleObject(resources.fence_event, INFINITE);
         }
 
         *fence_value += 1;
@@ -877,37 +907,48 @@ impl Renderer {
     }
 
     fn move_to_next_frame(&mut self) -> Result<()> {
-        let current_fence_value = self.fence_values[self.frame_index as usize];
+        ensure!(self.resources.is_some());
+        let resources = self.resources.as_mut().unwrap();
 
-        unsafe { self.command_queue.Signal(&self.fence, current_fence_value) }?;
+        let current_fence_value = resources.fence_values[resources.frame_index as usize];
 
-        self.frame_index = unsafe { self.swap_chain.GetCurrentBackBufferIndex() };
+        unsafe {
+            resources
+                .command_queue
+                .Signal(&resources.fence, current_fence_value)
+        }?;
 
-        let completed_value = unsafe { self.fence.GetCompletedValue() };
-        if completed_value < self.fence_values[self.frame_index as usize] {
+        resources.frame_index = unsafe { resources.swap_chain.GetCurrentBackBufferIndex() };
+
+        let completed_value = unsafe { resources.fence.GetCompletedValue() };
+        if completed_value < resources.fence_values[resources.frame_index as usize] {
             unsafe {
-                self.fence.SetEventOnCompletion(
-                    self.fence_values[self.frame_index as usize],
-                    self.fence_event,
+                resources.fence.SetEventOnCompletion(
+                    resources.fence_values[resources.frame_index as usize],
+                    resources.fence_event,
                 )?;
-                WaitForSingleObject(self.fence_event, INFINITE);
+                WaitForSingleObject(resources.fence_event, INFINITE);
             }
         }
-        self.fence_values[self.frame_index as usize] = current_fence_value + 1;
+        resources.fence_values[resources.frame_index as usize] = current_fence_value + 1;
 
         Ok(())
     }
 
     pub fn render(&mut self) -> Result<()> {
+        ensure!(self.resources.is_some());
+        let resources = self.resources.as_ref().unwrap();
+
         self.populate_command_list()?;
 
-        let command_list = ID3D12CommandList::from(&self.command_list);
+        let command_list = ID3D12CommandList::from(&resources.command_list);
         unsafe {
-            self.command_queue
+            resources
+                .command_queue
                 .ExecuteCommandLists(&[Some(command_list)])
         };
 
-        unsafe { self.swap_chain.Present(1, 0) }.ok()?;
+        unsafe { resources.swap_chain.Present(1, 0) }.ok()?;
 
         self.move_to_next_frame()?;
 
