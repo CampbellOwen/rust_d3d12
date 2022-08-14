@@ -221,6 +221,23 @@ fn create_pipeline_state(
         },
     ];
 
+    let stencil_op = D3D12_DEPTH_STENCILOP_DESC {
+        StencilFailOp: D3D12_STENCIL_OP_KEEP,
+        StencilDepthFailOp: D3D12_STENCIL_OP_KEEP,
+        StencilPassOp: D3D12_STENCIL_OP_KEEP,
+        StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+    };
+    let depth_stencil_desc = D3D12_DEPTH_STENCIL_DESC {
+        DepthEnable: true.into(),
+        DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ALL,
+        DepthFunc: D3D12_COMPARISON_FUNC_LESS,
+        StencilEnable: false.into(),
+        FrontFace: stencil_op,
+        BackFace: stencil_op,
+        StencilReadMask: D3D12_DEFAULT_STENCIL_READ_MASK as u8,
+        StencilWriteMask: D3D12_DEFAULT_STENCIL_READ_MASK as u8,
+    };
+
     let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
         InputLayout: D3D12_INPUT_LAYOUT_DESC {
             pInputElementDescs: input_element_descs.as_ptr(),
@@ -260,7 +277,7 @@ fn create_pipeline_state(
                 D3D12_RENDER_TARGET_BLEND_DESC::default(),
             ],
         },
-        DepthStencilState: D3D12_DEPTH_STENCIL_DESC::default(),
+        DepthStencilState: depth_stencil_desc,
         SampleMask: u32::MAX,
         PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
         NumRenderTargets: 1,
@@ -404,6 +421,63 @@ struct MappedBuffer {
     data: *mut c_void,
 }
 
+#[derive(Debug)]
+struct Tex2D {
+    resource: ID3D12Resource,
+    width: usize,
+    height: usize,
+}
+
+fn create_depth_stencil_buffer(
+    device: &ID3D12Device4,
+    width: usize,
+    height: usize,
+) -> Result<Tex2D> {
+    let mut depth_buffer: Option<ID3D12Resource> = None;
+
+    unsafe {
+        device.CreateCommittedResource(
+            &D3D12_HEAP_PROPERTIES {
+                Type: D3D12_HEAP_TYPE_DEFAULT,
+                ..Default::default()
+            },
+            D3D12_HEAP_FLAG_NONE,
+            &D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                Width: width as u64,
+                Height: height as u32,
+                DepthOrArraySize: 1,
+                MipLevels: 1,
+                Format: DXGI_FORMAT_D32_FLOAT,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Flags: D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+                ..Default::default()
+            },
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            &D3D12_CLEAR_VALUE {
+                Format: DXGI_FORMAT_D32_FLOAT,
+                Anonymous: D3D12_CLEAR_VALUE_0 {
+                    DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
+                        Depth: 1.0,
+                        Stencil: 0,
+                    },
+                },
+            },
+            &mut depth_buffer,
+        )?
+    };
+    let depth_buffer = depth_buffer.unwrap();
+
+    Ok(Tex2D {
+        resource: depth_buffer,
+        width,
+        height,
+    })
+}
+
 fn create_constant_buffer(device: &ID3D12Device4, size: usize) -> Result<MappedBuffer> {
     let mut constant_buffer: Option<ID3D12Resource> = None;
     unsafe {
@@ -522,6 +596,18 @@ impl DescriptorHeap {
         )
     }
 
+    pub fn depth_stencil_view_heap(
+        device: &ID3D12Device4,
+        num_descriptors: u32,
+    ) -> Result<DescriptorHeap> {
+        Self::create_heap(
+            device,
+            num_descriptors,
+            D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+            D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+        )
+    }
+
     pub fn allocate_handle(&mut self) -> Result<D3D12_CPU_DESCRIPTOR_HANDLE> {
         anyhow::ensure!(
             self.num_allocated < self.num_descriptors,
@@ -572,6 +658,7 @@ struct RendererResources {
     render_targets: [ID3D12Resource; FRAME_COUNT as usize],
     rtv_heap: DescriptorHeap,
     cbv_heap: DescriptorHeap,
+    dsv_heap: DescriptorHeap,
     viewport: D3D12_VIEWPORT,
     scissor_rect: RECT,
     command_allocators: [ID3D12CommandAllocator; FRAME_COUNT as usize],
@@ -589,6 +676,8 @@ struct RendererResources {
     index_buffer: ID3D12Resource,
     #[allow(dead_code)]
     constant_buffers: [MappedBuffer; FRAME_COUNT as usize],
+    #[allow(dead_code)]
+    depth_buffers: [Tex2D; FRAME_COUNT as usize],
 }
 
 #[derive(Debug)]
@@ -703,6 +792,26 @@ impl Renderer {
 
         let pso = create_pipeline_state(&device, &root_signature, &vertex_shader, &pixel_shader)?;
 
+        let mut dsv_heap = DescriptorHeap::depth_stencil_view_heap(&device, 2)?;
+        let depth_buffers: [Tex2D; FRAME_COUNT as usize] = array_init::try_array_init(|_| {
+            let buffer = create_depth_stencil_buffer(&device, width as usize, height as usize)?;
+
+            unsafe {
+                device.CreateDepthStencilView(
+                    &buffer.resource,
+                    &D3D12_DEPTH_STENCIL_VIEW_DESC {
+                        Format: DXGI_FORMAT_D32_FLOAT,
+                        ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
+                        Flags: D3D12_DSV_FLAG_NONE,
+                        ..Default::default()
+                    },
+                    dsv_heap.allocate_handle()?,
+                );
+            }
+
+            Ok(buffer)
+        })?;
+
         let command_list: ID3D12GraphicsCommandList = unsafe {
             device.CreateCommandList1(
                 0,
@@ -712,22 +821,6 @@ impl Renderer {
         }?;
 
         let aspect_ratio = (width as f32) / (height as f32);
-
-        let _vertices = [
-            Vertex {
-                position: [0.0, 0.25 * aspect_ratio, 0.0, 1.0],
-                color: [1.0, 0.0, 0.0, 1.0],
-            },
-            Vertex {
-                position: [0.25, -0.25 * aspect_ratio, 0.0, 1.0],
-                color: [0.0, 1.0, 0.0, 1.0],
-            },
-            Vertex {
-                position: [-0.25, -0.25 * aspect_ratio, 0.0, 1.0],
-                color: [0.0, 0.0, 1.0, 1.0],
-            },
-        ];
-        let _indices = [0, 1, 2];
 
         //let (vertices, indices) = load_cube()?;
         let (vertices, indices) = load_bunny()?;
@@ -739,7 +832,8 @@ impl Renderer {
         let mut cbv_heap = DescriptorHeap::constant_buffer_view_heap(&device, FRAME_COUNT)?;
 
         let constant_buffer = [
-            glam::Mat4::from_translation(Vec3::new(0.0, 0.0, 5.0)),
+            glam::Mat4::from_translation(Vec3::new(0.0, -1.0, 2.0))
+                * glam::Mat4::from_rotation_y(PI),
             glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
         ];
         let constant_buffer_size = align_data(
@@ -793,6 +887,7 @@ impl Renderer {
             render_targets,
             rtv_heap,
             cbv_heap,
+            dsv_heap,
             viewport,
             scissor_rect,
             command_allocators,
@@ -808,6 +903,7 @@ impl Renderer {
             fence_event,
 
             constant_buffers,
+            depth_buffers,
         };
 
         let mut renderer = Renderer {
@@ -854,11 +950,13 @@ impl Renderer {
 
         let rtv_handle = resources.rtv_heap.get_cpu_handle(resources.frame_index)?;
 
+        let dsv_handle = resources.dsv_heap.get_cpu_handle(resources.frame_index)?;
         unsafe {
-            command_list.OMSetRenderTargets(1, &rtv_handle, false, std::ptr::null());
+            command_list.OMSetRenderTargets(1, &rtv_handle, false, &dsv_handle);
         }
 
         unsafe {
+            command_list.ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, &[]);
             command_list.ClearRenderTargetView(rtv_handle, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
             command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             command_list.IASetVertexBuffers(0, &[resources.vbv]);
