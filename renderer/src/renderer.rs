@@ -787,8 +787,8 @@ impl Renderer {
 
         let root_signature = create_root_signature(&device)?;
 
-        let vertex_shader = compile_vertex_shader("src/shaders/triangle.hlsl", "VSMain")?;
-        let pixel_shader = compile_pixel_shader("src/shaders/triangle.hlsl", "PSMain")?;
+        let vertex_shader = compile_vertex_shader("renderer/src/shaders/triangle.hlsl", "VSMain")?;
+        let pixel_shader = compile_pixel_shader("renderer/src/shaders/triangle.hlsl", "PSMain")?;
 
         let pso = create_pipeline_state(&device, &root_signature, &vertex_shader, &pixel_shader)?;
 
