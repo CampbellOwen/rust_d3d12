@@ -260,6 +260,7 @@ pub fn create_pipeline_state(
             ],
         },
         DepthStencilState: depth_stencil_desc,
+        DSVFormat: DXGI_FORMAT_D32_FLOAT,
         SampleMask: u32::MAX,
         PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
         NumRenderTargets: 1,
