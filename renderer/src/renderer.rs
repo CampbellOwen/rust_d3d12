@@ -92,13 +92,6 @@ impl Renderer {
 
         let (width, height) = window_size;
 
-        //let command_queue: ID3D12CommandQueue = unsafe {
-        //    device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
-        //        Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
-        //        ..Default::default()
-        //    })
-        //}?;
-
         let graphics_queue = CommandQueue::new(&device, D3D12_COMMAND_LIST_TYPE_DIRECT)?;
 
         let swap_chain_desc = DXGI_SWAP_CHAIN_DESC1 {
