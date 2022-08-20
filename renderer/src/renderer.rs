@@ -4,13 +4,11 @@ use anyhow::{ensure, Ok, Result};
 use glam::Vec3;
 
 use windows::core::Interface;
-use windows::Win32::Foundation::{HANDLE, HWND, RECT};
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
-use windows::Win32::System::Threading::{CreateEventA, WaitForSingleObject};
-use windows::Win32::System::WindowsProgramming::INFINITE;
 
 const FRAME_COUNT: u32 = 2;
 
@@ -38,7 +36,7 @@ struct RendererResources {
     #[allow(dead_code)]
     device: ID3D12Device4,
 
-    command_queue: ID3D12CommandQueue,
+    graphics_queue: CommandQueue,
     swap_chain: IDXGISwapChain3,
     frame_index: u32,
     render_targets: [ID3D12Resource; FRAME_COUNT as usize],
@@ -51,9 +49,7 @@ struct RendererResources {
     root_signature: ID3D12RootSignature,
     pso: ID3D12PipelineState,
     command_list: ID3D12GraphicsCommandList,
-    fence: ID3D12Fence,
     fence_values: [u64; FRAME_COUNT as usize],
-    fence_event: HANDLE,
     vbv: D3D12_VERTEX_BUFFER_VIEW,
     ibv: D3D12_INDEX_BUFFER_VIEW,
     #[allow(dead_code)]
@@ -95,12 +91,15 @@ impl Renderer {
         let device = create_device(&adapter, feature_level)?;
 
         let (width, height) = window_size;
-        let command_queue: ID3D12CommandQueue = unsafe {
-            device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
-                Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
-                ..Default::default()
-            })
-        }?;
+
+        //let command_queue: ID3D12CommandQueue = unsafe {
+        //    device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
+        //        Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
+        //        ..Default::default()
+        //    })
+        //}?;
+
+        let graphics_queue = CommandQueue::new(&device, D3D12_COMMAND_LIST_TYPE_DIRECT)?;
 
         let swap_chain_desc = DXGI_SWAP_CHAIN_DESC1 {
             BufferCount: FRAME_COUNT,
@@ -118,7 +117,7 @@ impl Renderer {
 
         let swap_chain: IDXGISwapChain3 = unsafe {
             dxgi_factory.CreateSwapChainForHwnd(
-                &command_queue,
+                &graphics_queue.queue,
                 hwnd,
                 &swap_chain_desc,
                 std::ptr::null_mut(),
@@ -252,22 +251,13 @@ impl Renderer {
                 Ok(buffer)
             })?;
 
-        let mut fence_values = [0; 2];
-
-        let fence = unsafe {
-            device.CreateFence(fence_values[frame_index as usize], D3D12_FENCE_FLAG_NONE)
-        }?;
-
-        fence_values[frame_index as usize] += 1;
-
-        let fence_event = unsafe { CreateEventA(std::ptr::null(), false, false, None) }?;
-
+        let fence_values = [0; 2];
         let resources = RendererResources {
             hwnd,
             dxgi_factory,
             device,
 
-            command_queue,
+            graphics_queue,
             swap_chain,
             frame_index,
             render_targets,
@@ -284,9 +274,7 @@ impl Renderer {
             vbv,
             index_buffer,
             ibv,
-            fence,
             fence_values,
-            fence_event,
 
             constant_buffers,
             depth_buffers,
@@ -296,7 +284,12 @@ impl Renderer {
             resources: Some(resources),
         };
 
-        renderer.wait_for_gpu()?;
+        renderer
+            .resources
+            .as_mut()
+            .unwrap()
+            .graphics_queue
+            .wait_for_idle()?;
 
         Ok(renderer)
     }
@@ -305,11 +298,13 @@ impl Renderer {
         ensure!(self.resources.is_some());
         let resources = self.resources.as_ref().unwrap();
 
+        // Resetting the command allocator while the frame is being rendered is not okay
         let command_allocator = &resources.command_allocators[resources.frame_index as usize];
         unsafe {
             command_allocator.Reset()?;
         }
 
+        // Resetting the command list can happen right after submission
         let command_list = &resources.command_list;
         unsafe {
             command_list.Reset(command_allocator, &resources.pso)?;
@@ -368,73 +363,39 @@ impl Renderer {
         // TODO: Implement this
     }
 
-    pub fn wait_for_gpu(&mut self) -> Result<()> {
+    pub fn wait_for_idle(&mut self) -> Result<()> {
         ensure!(self.resources.is_some());
         let resources = self.resources.as_mut().unwrap();
-        let fence = &resources.fence;
-        let frame_index = resources.frame_index as usize;
-        let fence_value = &mut resources.fence_values[frame_index];
-
-        unsafe {
-            resources.command_queue.Signal(fence, *fence_value)?;
-
-            resources
-                .fence
-                .SetEventOnCompletion(*fence_value, resources.fence_event)?;
-
-            WaitForSingleObject(resources.fence_event, INFINITE);
-        }
-
-        *fence_value += 1;
-
-        Ok(())
-    }
-
-    fn move_to_next_frame(&mut self) -> Result<()> {
-        ensure!(self.resources.is_some());
-        let resources = self.resources.as_mut().unwrap();
-
-        let current_fence_value = resources.fence_values[resources.frame_index as usize];
-
-        unsafe {
-            resources
-                .command_queue
-                .Signal(&resources.fence, current_fence_value)
-        }?;
-
-        resources.frame_index = unsafe { resources.swap_chain.GetCurrentBackBufferIndex() };
-
-        let completed_value = unsafe { resources.fence.GetCompletedValue() };
-        if completed_value < resources.fence_values[resources.frame_index as usize] {
-            unsafe {
-                resources.fence.SetEventOnCompletion(
-                    resources.fence_values[resources.frame_index as usize],
-                    resources.fence_event,
-                )?;
-                WaitForSingleObject(resources.fence_event, INFINITE);
-            }
-        }
-        resources.fence_values[resources.frame_index as usize] = current_fence_value + 1;
-
-        Ok(())
+        resources.graphics_queue.wait_for_idle()
     }
 
     pub fn render(&mut self) -> Result<()> {
         ensure!(self.resources.is_some());
-        let resources = self.resources.as_ref().unwrap();
+        {
+            // Let this fall out of scope after waiting to remove the mutable reference
+            let resources = self.resources.as_mut().unwrap();
+
+            let last_fence_value = resources.fence_values[resources.frame_index as usize];
+            resources
+                .graphics_queue
+                .wait_for_fence_blocking(last_fence_value)?;
+        }
 
         self.populate_command_list()?;
 
+        let resources = self.resources.as_mut().unwrap();
+
         let command_list = ID3D12CommandList::from(&resources.command_list);
-        unsafe {
-            resources
-                .command_queue
-                .ExecuteCommandLists(&[Some(command_list)])
-        };
+
+        let fence_value = resources
+            .graphics_queue
+            .execute_command_list(command_list)?;
+
+        resources.fence_values[resources.frame_index as usize] = fence_value;
 
         unsafe { resources.swap_chain.Present(1, 0) }.ok()?;
 
-        self.move_to_next_frame()?;
+        resources.frame_index = unsafe { resources.swap_chain.GetCurrentBackBufferIndex() };
 
         Ok(())
     }

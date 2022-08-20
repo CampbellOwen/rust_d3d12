@@ -27,7 +27,7 @@ fn main() {
             Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
                 WindowEvent::CloseRequested => {
                     is_closing = true;
-                    renderer.wait_for_gpu().unwrap();
+                    renderer.wait_for_idle().unwrap();
                     renderer = Renderer::null();
                     *control_flow = ControlFlow::Exit
                 }
