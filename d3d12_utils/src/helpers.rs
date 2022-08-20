@@ -3,13 +3,10 @@ use std::ffi::c_void;
 use anyhow::{Context, Result};
 
 use hassle_rs::{compile_hlsl, validate_dxil};
-use windows::{
-    core::PCSTR,
-    Win32::Graphics::{
-        Direct3D::*,
-        Direct3D12::*,
-        Dxgi::{Common::*, *},
-    },
+use windows::Win32::Graphics::{
+    Direct3D::*,
+    Direct3D12::*,
+    Dxgi::{Common::*, *},
 };
 
 pub fn get_hardware_adapter(
@@ -170,39 +167,11 @@ pub fn compile_vertex_shader(filename: &str, entry_point: &str) -> Result<Compil
 pub fn create_pipeline_state(
     device: &ID3D12Device4,
     root_signature: &ID3D12RootSignature,
+    input_element_descs: &[D3D12_INPUT_ELEMENT_DESC],
     vertex_shader: &CompiledShader,
     pixel_shader: &CompiledShader,
+    num_render_targets: u32,
 ) -> Result<ID3D12PipelineState> {
-    let input_element_descs: [D3D12_INPUT_ELEMENT_DESC; 3] = [
-        D3D12_INPUT_ELEMENT_DESC {
-            SemanticName: PCSTR(b"POSITION\0".as_ptr()),
-            SemanticIndex: 0,
-            Format: DXGI_FORMAT_R32G32B32_FLOAT,
-            InputSlot: 0,
-            AlignedByteOffset: 0,
-            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        },
-        D3D12_INPUT_ELEMENT_DESC {
-            SemanticName: PCSTR(b"NORMAL\0".as_ptr()),
-            SemanticIndex: 0,
-            Format: DXGI_FORMAT_R32G32B32_FLOAT,
-            InputSlot: 0,
-            AlignedByteOffset: 12,
-            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        },
-        D3D12_INPUT_ELEMENT_DESC {
-            SemanticName: PCSTR(b"TEXCOORD\0".as_ptr()),
-            SemanticIndex: 0,
-            Format: DXGI_FORMAT_R32G32_FLOAT,
-            InputSlot: 0,
-            AlignedByteOffset: 24,
-            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        },
-    ];
-
     let stencil_op = D3D12_DEPTH_STENCILOP_DESC {
         StencilFailOp: D3D12_STENCIL_OP_KEEP,
         StencilDepthFailOp: D3D12_STENCIL_OP_KEEP,
@@ -230,7 +199,7 @@ pub fn create_pipeline_state(
         PS: pixel_shader.get_handle(),
         RasterizerState: D3D12_RASTERIZER_DESC {
             FillMode: D3D12_FILL_MODE_SOLID,
-            CullMode: D3D12_CULL_MODE_NONE,
+            CullMode: D3D12_CULL_MODE_BACK,
             DepthClipEnable: true.into(),
             ..Default::default()
         },
@@ -263,14 +232,16 @@ pub fn create_pipeline_state(
         DSVFormat: DXGI_FORMAT_D32_FLOAT,
         SampleMask: u32::MAX,
         PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-        NumRenderTargets: 1,
+        NumRenderTargets: num_render_targets,
         SampleDesc: DXGI_SAMPLE_DESC {
             Count: 1,
             ..Default::default()
         },
         ..Default::default()
     };
-    desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    for i in 0..num_render_targets as usize {
+        desc.RTVFormats[i] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    }
 
     let pso = unsafe { device.CreateGraphicsPipelineState(&desc) }?;
 

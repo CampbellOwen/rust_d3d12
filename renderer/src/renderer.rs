@@ -3,7 +3,7 @@ use std::f32::consts::PI;
 use anyhow::{ensure, Ok, Result};
 use glam::Vec3;
 
-use windows::core::Interface;
+use windows::core::{Interface, PCSTR};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
@@ -175,7 +175,43 @@ impl Renderer {
         let vertex_shader = compile_vertex_shader("renderer/src/shaders/triangle.hlsl", "VSMain")?;
         let pixel_shader = compile_pixel_shader("renderer/src/shaders/triangle.hlsl", "PSMain")?;
 
-        let pso = create_pipeline_state(&device, &root_signature, &vertex_shader, &pixel_shader)?;
+        let input_element_descs: [D3D12_INPUT_ELEMENT_DESC; 3] = [
+            D3D12_INPUT_ELEMENT_DESC {
+                SemanticName: PCSTR(b"POSITION\0".as_ptr()),
+                SemanticIndex: 0,
+                Format: DXGI_FORMAT_R32G32B32_FLOAT,
+                InputSlot: 0,
+                AlignedByteOffset: 0,
+                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0,
+            },
+            D3D12_INPUT_ELEMENT_DESC {
+                SemanticName: PCSTR(b"NORMAL\0".as_ptr()),
+                SemanticIndex: 0,
+                Format: DXGI_FORMAT_R32G32B32_FLOAT,
+                InputSlot: 0,
+                AlignedByteOffset: 12,
+                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0,
+            },
+            D3D12_INPUT_ELEMENT_DESC {
+                SemanticName: PCSTR(b"TEXCOORD\0".as_ptr()),
+                SemanticIndex: 0,
+                Format: DXGI_FORMAT_R32G32_FLOAT,
+                InputSlot: 0,
+                AlignedByteOffset: 24,
+                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0,
+            },
+        ];
+        let pso = create_pipeline_state(
+            &device,
+            &root_signature,
+            &input_element_descs,
+            &vertex_shader,
+            &pixel_shader,
+            1,
+        )?;
 
         let mut dsv_heap = DescriptorHeap::depth_stencil_view_heap(&device, 2)?;
         let depth_buffers: [Tex2D; FRAME_COUNT as usize] = array_init::try_array_init(|_| {
