@@ -1,4 +1,4 @@
-use windows::Win32::Foundation::HWND;
+use windows::Win32::{Foundation::HWND, Graphics::Dxgi::*};
 use winit::{
     dpi::PhysicalSize,
     event::{Event, WindowEvent},
@@ -27,6 +27,22 @@ fn main() {
             Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
                 WindowEvent::CloseRequested => {
                     is_closing = true;
+
+                    if cfg!(debug_assertions) {
+                        if let Ok(debug_interface) =
+                            unsafe { DXGIGetDebugInterface1::<IDXGIDebug1>(0) }
+                        {
+                            unsafe {
+                                debug_interface
+                                    .ReportLiveObjects(
+                                        DXGI_DEBUG_ALL,
+                                        DXGI_DEBUG_RLO_SUMMARY | DXGI_DEBUG_RLO_IGNORE_INTERNAL,
+                                    )
+                                    .expect("Report live objects")
+                            };
+                        }
+                    }
+
                     renderer.wait_for_idle().unwrap();
                     renderer = Renderer::null();
                     *control_flow = ControlFlow::Exit
