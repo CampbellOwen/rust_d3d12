@@ -38,8 +38,11 @@ struct RendererResources {
 
     graphics_queue: CommandQueue,
 
+    #[allow(dead_code)]
     copy_queue: CommandQueue,
+    #[allow(dead_code)]
     copy_command_allocator: ID3D12CommandAllocator,
+    #[allow(dead_code)]
     copy_command_list: ID3D12GraphicsCommandList,
 
     swap_chain: IDXGISwapChain3,
@@ -58,6 +61,7 @@ struct RendererResources {
     vbv: D3D12_VERTEX_BUFFER_VIEW,
     ibv: D3D12_INDEX_BUFFER_VIEW,
 
+    #[allow(dead_code)]
     vertex_buffer_heap: Heap,
     #[allow(dead_code)]
     vertex_buffer: Resource,
