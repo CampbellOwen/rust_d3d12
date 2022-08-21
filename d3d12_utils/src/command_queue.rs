@@ -76,6 +76,15 @@ impl CommandQueue {
         Ok(())
     }
 
+    pub fn insert_wait_for_queue_fence(
+        &self,
+        queue: &CommandQueue,
+        fence_value: u64,
+    ) -> Result<()> {
+        unsafe { self.queue.Wait(&queue.fence, fence_value)? }
+        Ok(())
+    }
+
     pub fn wait_for_fence_blocking(&mut self, fence_value: u64) -> Result<()> {
         if self.is_fence_complete(fence_value) {
             return Ok(());
@@ -93,10 +102,11 @@ impl CommandQueue {
         Ok(())
     }
 
-    pub fn execute_command_list(&mut self, command_list: ID3D12CommandList) -> Result<u64> {
+    pub fn execute_command_list(&mut self, command_list: &ID3D12CommandList) -> Result<u64> {
         let value_to_signal = self.next_fence_value;
         unsafe {
-            self.queue.ExecuteCommandLists(&[Some(command_list)]);
+            self.queue
+                .ExecuteCommandLists(&[Some(command_list.clone())]);
 
             self.queue.Signal(&self.fence, value_to_signal)?;
         }

@@ -1,5 +1,3 @@
-use std::ffi::c_void;
-
 use anyhow::{Context, Result};
 
 use hassle_rs::{compile_hlsl, validate_dxil};
@@ -248,125 +246,12 @@ pub fn create_pipeline_state(
     Ok(pso)
 }
 
-pub fn create_vertex_buffer<T: Sized + std::fmt::Debug>(
-    device: &ID3D12Device4,
-    vertices: &[T],
-) -> Result<(ID3D12Resource, D3D12_VERTEX_BUFFER_VIEW)> {
-    let mut vertex_buffer: Option<ID3D12Resource> = None;
-    unsafe {
-        device.CreateCommittedResource(
-            &D3D12_HEAP_PROPERTIES {
-                Type: D3D12_HEAP_TYPE_UPLOAD,
-                ..Default::default()
-            },
-            D3D12_HEAP_FLAG_NONE,
-            &D3D12_RESOURCE_DESC {
-                Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                Width: std::mem::size_of_val(vertices) as u64,
-                Height: 1,
-                DepthOrArraySize: 1,
-                MipLevels: 1,
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-                ..Default::default()
-            },
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            std::ptr::null(),
-            &mut vertex_buffer,
-        )
-    }?;
-    let vertex_buffer = vertex_buffer.unwrap();
-
-    unsafe {
-        let mut data = std::ptr::null_mut();
-        vertex_buffer.Map(0, std::ptr::null(), &mut data)?;
-        std::ptr::copy_nonoverlapping(
-            vertices.as_ptr() as *mut u8,
-            data as *mut u8,
-            std::mem::size_of_val(vertices),
-        );
-        vertex_buffer.Unmap(0, std::ptr::null());
-    }
-
-    let vbv = D3D12_VERTEX_BUFFER_VIEW {
-        BufferLocation: unsafe { vertex_buffer.GetGPUVirtualAddress() },
-        StrideInBytes: std::mem::size_of::<T>() as u32,
-        SizeInBytes: std::mem::size_of_val(vertices) as u32,
-    };
-
-    Ok((vertex_buffer, vbv))
-}
-
-pub fn create_index_buffer(
-    device: &ID3D12Device4,
-    indices: &[u32],
-) -> Result<(ID3D12Resource, D3D12_INDEX_BUFFER_VIEW)> {
-    let mut index_buffer: Option<ID3D12Resource> = None;
-    unsafe {
-        device.CreateCommittedResource(
-            &D3D12_HEAP_PROPERTIES {
-                Type: D3D12_HEAP_TYPE_UPLOAD,
-                ..Default::default()
-            },
-            D3D12_HEAP_FLAG_NONE,
-            &D3D12_RESOURCE_DESC {
-                Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                Width: std::mem::size_of_val(indices) as u64,
-                Height: 1,
-                DepthOrArraySize: 1,
-                MipLevels: 1,
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-                ..Default::default()
-            },
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            std::ptr::null(),
-            &mut index_buffer,
-        )
-    }?;
-
-    let index_buffer = index_buffer.unwrap();
-    unsafe {
-        let mut data = std::ptr::null_mut();
-        index_buffer.Map(0, std::ptr::null(), &mut data)?;
-
-        std::ptr::copy_nonoverlapping(
-            indices.as_ptr() as *mut u8,
-            data as *mut u8,
-            std::mem::size_of_val(indices),
-        );
-
-        index_buffer.Unmap(0, std::ptr::null());
-    }
-
-    let ibv = D3D12_INDEX_BUFFER_VIEW {
-        BufferLocation: unsafe { index_buffer.GetGPUVirtualAddress() },
-        SizeInBytes: std::mem::size_of_val(indices) as u32,
-        Format: DXGI_FORMAT_R32_UINT,
-    };
-
-    Ok((index_buffer, ibv))
-}
-
 pub fn align_data(location: usize, alignment: usize) -> usize {
     if alignment == 0 || (alignment & (alignment - 1) != 0) {
         panic!("Non power of 2 alignment");
     }
 
     (location + (alignment - 1)) & !(alignment - 1)
-}
-
-#[derive(Debug)]
-pub struct MappedBuffer {
-    pub buffer: ID3D12Resource,
-    pub size: usize,
-    pub data: *mut c_void,
 }
 
 #[derive(Debug)]
@@ -423,45 +308,6 @@ pub fn create_depth_stencil_buffer(
         resource: depth_buffer,
         width,
         height,
-    })
-}
-
-pub fn create_constant_buffer(device: &ID3D12Device4, size: usize) -> Result<MappedBuffer> {
-    let mut constant_buffer: Option<ID3D12Resource> = None;
-    unsafe {
-        device.CreateCommittedResource(
-            &D3D12_HEAP_PROPERTIES {
-                Type: D3D12_HEAP_TYPE_UPLOAD,
-                ..Default::default()
-            },
-            D3D12_HEAP_FLAG_NONE,
-            &D3D12_RESOURCE_DESC {
-                Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                Width: size as u64,
-                Height: 1,
-                DepthOrArraySize: 1,
-                MipLevels: 1,
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-                ..Default::default()
-            },
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            std::ptr::null(),
-            &mut constant_buffer,
-        )?;
-    }
-    let constant_buffer = constant_buffer.unwrap();
-
-    let mut p_data = std::ptr::null_mut();
-    unsafe { constant_buffer.Map(0, std::ptr::null(), &mut p_data)? };
-
-    Ok(MappedBuffer {
-        buffer: constant_buffer,
-        size,
-        data: p_data,
     })
 }
 

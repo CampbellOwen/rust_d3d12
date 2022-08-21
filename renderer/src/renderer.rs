@@ -37,6 +37,11 @@ struct RendererResources {
     device: ID3D12Device4,
 
     graphics_queue: CommandQueue,
+
+    copy_queue: CommandQueue,
+    copy_command_allocator: ID3D12CommandAllocator,
+    copy_command_list: ID3D12GraphicsCommandList,
+
     swap_chain: IDXGISwapChain3,
     frame_index: u32,
     render_targets: [ID3D12Resource; FRAME_COUNT as usize],
@@ -52,12 +57,14 @@ struct RendererResources {
     fence_values: [u64; FRAME_COUNT as usize],
     vbv: D3D12_VERTEX_BUFFER_VIEW,
     ibv: D3D12_INDEX_BUFFER_VIEW,
+
+    vertex_buffer_heap: Heap,
     #[allow(dead_code)]
-    vertex_buffer: ID3D12Resource,
+    vertex_buffer: Resource,
     #[allow(dead_code)]
-    index_buffer: ID3D12Resource,
+    index_buffer: Resource,
     #[allow(dead_code)]
-    constant_buffers: [MappedBuffer; FRAME_COUNT as usize],
+    constant_buffers: [Resource; FRAME_COUNT as usize],
     #[allow(dead_code)]
     depth_buffers: [Tex2D; FRAME_COUNT as usize],
 }
@@ -93,6 +100,20 @@ impl Renderer {
         let (width, height) = window_size;
 
         let graphics_queue = CommandQueue::new(&device, D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+
+        let mut copy_queue = CommandQueue::new(&device, D3D12_COMMAND_LIST_TYPE_COPY)?;
+        let copy_command_allocator: ID3D12CommandAllocator =
+            unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY) }?;
+        unsafe {
+            copy_command_allocator.Reset()?;
+        }
+        let copy_command_list: ID3D12GraphicsCommandList = unsafe {
+            device.CreateCommandList1(
+                0,
+                D3D12_COMMAND_LIST_TYPE_COPY,
+                D3D12_COMMAND_LIST_FLAG_NONE,
+            )
+        }?;
 
         let swap_chain_desc = DXGI_SWAP_CHAIN_DESC1 {
             BufferCount: FRAME_COUNT,
@@ -234,17 +255,98 @@ impl Renderer {
             )
         }?;
 
-        let aspect_ratio = (width as f32) / (height as f32);
-
-        //let (vertices, indices) = load_cube()?;
+        let mut upload_heap = Heap::create_upload_heap(&device, 155569680)?;
         let (vertices, indices) = load_bunny()?;
 
-        let (vertex_buffer, vbv) = create_vertex_buffer(&device, &vertices)?;
+        let vb_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Width: std::mem::size_of_val(vertices.as_slice()) as u64,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            ..Default::default()
+        };
 
-        let (index_buffer, ibv) = create_index_buffer(&device, &indices)?;
+        let vertex_buffer_staging = upload_heap.create_resource(
+            &device,
+            &vb_desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            true,
+        )?;
+        vertex_buffer_staging.copy_from(&vertices)?;
+
+        let mut vertex_buffer_heap = Heap::create_default_heap(&device, 155569680)?;
+        let vertex_buffer = vertex_buffer_heap.create_resource(
+            &device,
+            &vb_desc,
+            D3D12_RESOURCE_STATE_COMMON,
+            false,
+        )?;
+
+        let vbv = D3D12_VERTEX_BUFFER_VIEW {
+            BufferLocation: vertex_buffer.gpu_address(),
+            StrideInBytes: std::mem::size_of::<ObjVertex>() as u32,
+            SizeInBytes: std::mem::size_of_val(vertices.as_slice()) as u32,
+        };
+
+        let index_buffer_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Width: std::mem::size_of_val(indices.as_slice()) as u64,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            ..Default::default()
+        };
+        let index_buffer_staging = upload_heap.create_resource(
+            &device,
+            &index_buffer_desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            true,
+        )?;
+        index_buffer_staging.copy_from(&indices)?;
+
+        let index_buffer = vertex_buffer_heap.create_resource(
+            &device,
+            &index_buffer_desc,
+            D3D12_RESOURCE_STATE_COMMON,
+            false,
+        )?;
+
+        let ibv = D3D12_INDEX_BUFFER_VIEW {
+            BufferLocation: index_buffer.gpu_address(),
+            SizeInBytes: std::mem::size_of_val(indices.as_slice()) as u32,
+            Format: DXGI_FORMAT_R32_UINT,
+        };
+
+        unsafe {
+            copy_command_list.Reset(&copy_command_allocator, None)?;
+            copy_command_list.CopyResource(
+                &vertex_buffer.device_resource,
+                &vertex_buffer_staging.device_resource,
+            );
+            copy_command_list.CopyResource(
+                &index_buffer.device_resource,
+                &index_buffer_staging.device_resource,
+            );
+            copy_command_list.Close()?;
+        };
+
+        let copy_fence = copy_queue.execute_command_list(&copy_command_list.clone().into())?;
+        graphics_queue.insert_wait_for_queue_fence(&copy_queue, copy_fence)?;
 
         let mut cbv_heap = DescriptorHeap::constant_buffer_view_heap(&device, FRAME_COUNT)?;
 
+        let aspect_ratio = (width as f32) / (height as f32);
         let constant_buffer = [
             glam::Mat4::from_translation(Vec3::new(0.0, -0.8, 1.5))
                 * glam::Mat4::from_rotation_y(PI),
@@ -254,23 +356,39 @@ impl Renderer {
             std::mem::size_of_val(&constant_buffer),
             D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
         );
-        let constant_buffers: [MappedBuffer; FRAME_COUNT as usize] =
-            array_init::try_array_init(|_| {
-                let buffer = create_constant_buffer(&device, constant_buffer_size)?;
 
-                //let matrix = glam::Mat4::IDENTITY;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        std::ptr::addr_of!(constant_buffer),
-                        buffer.data as _,
-                        1,
-                    )
-                };
+        let constant_buffers: [Resource; FRAME_COUNT as usize] =
+            array_init::try_array_init(|_| {
+                //let buffer = create_constant_buffer(&device, constant_buffer_size)?;
+                let buffer = Resource::create_committed(
+                    &device,
+                    &D3D12_HEAP_PROPERTIES {
+                        Type: D3D12_HEAP_TYPE_UPLOAD,
+                        ..Default::default()
+                    },
+                    &D3D12_RESOURCE_DESC {
+                        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                        Width: constant_buffer_size as u64,
+                        Height: 1,
+                        DepthOrArraySize: 1,
+                        MipLevels: 1,
+                        SampleDesc: DXGI_SAMPLE_DESC {
+                            Count: 1,
+                            Quality: 0,
+                        },
+                        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                        ..Default::default()
+                    },
+                    D3D12_RESOURCE_STATE_GENERIC_READ,
+                    true,
+                )?;
+
+                buffer.copy_from(&constant_buffer)?;
 
                 unsafe {
                     device.CreateConstantBufferView(
                         &D3D12_CONSTANT_BUFFER_VIEW_DESC {
-                            BufferLocation: buffer.buffer.GetGPUVirtualAddress(),
+                            BufferLocation: buffer.gpu_address(),
                             SizeInBytes: buffer.size as u32,
                         },
                         cbv_heap.allocate_handle()?,
@@ -287,6 +405,7 @@ impl Renderer {
             device,
 
             graphics_queue,
+            copy_queue,
             swap_chain,
             frame_index,
             render_targets,
@@ -307,6 +426,9 @@ impl Renderer {
 
             constant_buffers,
             depth_buffers,
+            copy_command_allocator,
+            copy_command_list,
+            vertex_buffer_heap,
         };
 
         let mut renderer = Renderer {
@@ -418,7 +540,7 @@ impl Renderer {
 
         let fence_value = resources
             .graphics_queue
-            .execute_command_list(command_list)?;
+            .execute_command_list(&command_list)?;
 
         resources.fence_values[resources.frame_index as usize] = fence_value;
 
