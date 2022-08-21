@@ -1,4 +1,6 @@
-# TODO
+# D3D12 Renderer
+
+## TODO
 
 - [x] Load mesh
   - [x] Matrices
@@ -15,3 +17,9 @@
 - [ ] Shader reflection
   - [ ] Parse vertex format from DXIL?
 - [ ] Basic Shadows
+
+## Progress
+
+2022-08-21
+
+![image of bunny](img/2022-08-21.png)
