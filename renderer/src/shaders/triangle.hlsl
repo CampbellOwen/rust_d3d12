@@ -5,6 +5,7 @@ cbuffer Camera : register(b0) {
 
 Texture2D t1 : register(t0);
 SamplerState s1 : register(s0);
+
 struct PSInput
 {
     float4 position : SV_POSITION;
@@ -24,7 +25,6 @@ PSInput VSMain(float3 position : POSITION, float3 normal : NORMAL, float2 uv : T
     result.position_world = pos_world;
     result.normal = normal;
     result.uv = uv;
-    //result.color = t1.Sample(s1, uv);
 
     return result;
 }
