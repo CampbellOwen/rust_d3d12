@@ -1,11 +1,19 @@
 use anyhow::{Context, Result};
 
 use hassle_rs::{compile_hlsl, validate_dxil};
-use windows::Win32::Graphics::{
-    Direct3D::*,
-    Direct3D12::*,
-    Dxgi::{Common::*, *},
+use windows::{
+    core::{Interface, PCWSTR},
+    Win32::{
+        Foundation::{HWND, RECT},
+        Graphics::{
+            Direct3D::*,
+            Direct3D12::*,
+            Dxgi::{Common::*, *},
+        },
+    },
 };
+
+use crate::{CommandQueue, DescriptorHeap};
 
 pub fn get_hardware_adapter(
     factory: &IDXGIFactory5,
@@ -365,4 +373,124 @@ pub fn transition_barrier(
             }),
         },
     }
+}
+
+pub fn create_swapchain(
+    hwnd: HWND,
+    dxgi_factory: &IDXGIFactory5,
+    graphics_queue: &CommandQueue,
+    buffer_count: u32,
+    extent: (u32, u32),
+) -> Result<IDXGISwapChain3> {
+    let (width, height) = extent;
+
+    let swap_chain_desc = DXGI_SWAP_CHAIN_DESC1 {
+        BufferCount: buffer_count,
+        Width: width,
+        Height: height,
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let swap_chain: IDXGISwapChain3 = unsafe {
+        dxgi_factory.CreateSwapChainForHwnd(
+            &graphics_queue.queue,
+            hwnd,
+            &swap_chain_desc,
+            std::ptr::null_mut(),
+            None,
+        )?
+    }
+    .cast()?;
+
+    Ok(swap_chain)
+}
+
+pub fn get_swapchain_render_targets<const N: usize>(
+    device: &ID3D12Device4,
+    rtv_handles: &[D3D12_CPU_DESCRIPTOR_HANDLE; N],
+    swap_chain: &IDXGISwapChain3,
+) -> Result<Vec<ID3D12Resource>> {
+    Ok((0..N)
+        .filter_map(|i: usize| {
+            let render_target: ID3D12Resource = unsafe { swap_chain.GetBuffer(i as u32) }.ok()?;
+            unsafe {
+                render_target
+                    .SetName(PCWSTR::from(&format!("Backbuffer {}", i).into()))
+                    .ok()?;
+            }
+            unsafe {
+                device.CreateRenderTargetView(&render_target, std::ptr::null(), rtv_handles[i]);
+            }
+
+            Some(render_target)
+        })
+        .collect())
+}
+
+pub fn create_swapchain_and_views<const N: usize>(
+    hwnd: HWND,
+    device: &ID3D12Device4,
+    dxgi_factory: &IDXGIFactory5,
+    graphics_queue: &CommandQueue,
+    rtv_handles: &[D3D12_CPU_DESCRIPTOR_HANDLE; N],
+    extent: (u32, u32),
+) -> Result<(IDXGISwapChain3, Vec<ID3D12Resource>, D3D12_VIEWPORT, RECT)> {
+    let (width, height) = extent;
+    let swap_chain = create_swapchain(hwnd, dxgi_factory, graphics_queue, N as u32, extent)?;
+    let render_targets = get_swapchain_render_targets(device, rtv_handles, &swap_chain)?;
+    let viewport = D3D12_VIEWPORT {
+        TopLeftX: 0.0,
+        TopLeftY: 0.0,
+        Width: width as f32,
+        Height: height as f32,
+        MinDepth: D3D12_MIN_DEPTH,
+        MaxDepth: D3D12_MAX_DEPTH,
+    };
+
+    let scissor_rect = RECT {
+        left: 0,
+        top: 0,
+        right: width as i32,
+        bottom: height as i32,
+    };
+    Ok((swap_chain, render_targets, viewport, scissor_rect))
+}
+
+pub fn resize_swapchain<const N: usize>(
+    device: &ID3D12Device4,
+    swap_chain: &IDXGISwapChain3,
+    extent: (u32, u32),
+    rtv_handles: &[D3D12_CPU_DESCRIPTOR_HANDLE; N],
+) -> Result<(Vec<ID3D12Resource>, D3D12_VIEWPORT, RECT)> {
+    let (width, height) = extent;
+    unsafe {
+        swap_chain.ResizeBuffers(N as u32, width, height, DXGI_FORMAT_UNKNOWN, 0)?;
+    }
+
+    let render_targets = get_swapchain_render_targets(device, rtv_handles, swap_chain)?;
+
+    let viewport = D3D12_VIEWPORT {
+        TopLeftX: 0.0,
+        TopLeftY: 0.0,
+        Width: width as f32,
+        Height: height as f32,
+        MinDepth: D3D12_MIN_DEPTH,
+        MaxDepth: D3D12_MAX_DEPTH,
+    };
+
+    let scissor_rect = RECT {
+        left: 0,
+        top: 0,
+        right: width as i32,
+        bottom: height as i32,
+    };
+
+    Ok((render_targets, viewport, scissor_rect))
 }

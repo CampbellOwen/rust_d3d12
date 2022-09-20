@@ -12,7 +12,7 @@ use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 
-const FRAME_COUNT: u32 = 2;
+const FRAME_COUNT: usize = 2;
 
 use d3d12_utils::*;
 
@@ -30,13 +30,10 @@ fn load_bunny() -> Result<(Vec<ObjVertex>, Vec<u32>)> {
 }
 
 #[derive(Debug)]
-struct RendererResources {
-    #[allow(dead_code)]
+pub(crate) struct RendererResources {
     hwnd: HWND,
-    #[allow(dead_code)]
     dxgi_factory: IDXGIFactory5,
-    #[allow(dead_code)]
-    device: ID3D12Device4,
+    pub(crate) device: ID3D12Device4,
 
     graphics_queue: CommandQueue,
 
@@ -49,7 +46,7 @@ struct RendererResources {
 
     swap_chain: IDXGISwapChain3,
     frame_index: u32,
-    render_targets: [ID3D12Resource; FRAME_COUNT as usize],
+    render_targets: Vec<ID3D12Resource>,
     rtv_heap: DescriptorHeap,
     srv_heap: DescriptorHeap,
     dsv_heap: DescriptorHeap,
@@ -95,7 +92,7 @@ struct RendererResources {
 
 #[derive(Debug)]
 pub struct Renderer {
-    resources: Option<RendererResources>,
+    pub(crate) resources: Option<RendererResources>,
 }
 
 impl Renderer {
@@ -151,66 +148,30 @@ impl Renderer {
             )
         }?;
 
-        let swap_chain_desc = DXGI_SWAP_CHAIN_DESC1 {
-            BufferCount: FRAME_COUNT,
-            Width: width,
-            Height: height,
-            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-            SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut rtv_heap = DescriptorHeap::render_target_view_heap(&device, FRAME_COUNT as u32)?;
 
-        let swap_chain: IDXGISwapChain3 = unsafe {
-            dxgi_factory.CreateSwapChainForHwnd(
-                &graphics_queue.queue,
-                hwnd,
-                &swap_chain_desc,
-                std::ptr::null_mut(),
-                None,
-            )?
-        }
-        .cast()?;
+        let rtv_indices: [u32; FRAME_COUNT] = array_init::try_array_init(|_| -> Result<u32> {
+            let (index, _) = rtv_heap.allocate_handle()?;
+            Ok(index)
+        })?;
+
+        let rtv_handles: [D3D12_CPU_DESCRIPTOR_HANDLE; FRAME_COUNT] =
+            array_init::try_array_init(|i| rtv_heap.get_cpu_handle(i as u32))?;
+
+        let (swap_chain, render_targets, viewport, scissor_rect) = create_swapchain_and_views(
+            hwnd,
+            &device,
+            &dxgi_factory,
+            &graphics_queue,
+            &rtv_handles,
+            (width, height),
+        )?;
+
+        let frame_index = unsafe { swap_chain.GetCurrentBackBufferIndex() };
 
         unsafe {
             dxgi_factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER)?;
         }
-
-        let frame_index = unsafe { swap_chain.GetCurrentBackBufferIndex() };
-
-        let mut rtv_heap = DescriptorHeap::render_target_view_heap(&device, FRAME_COUNT)?;
-
-        let mut rtv_indices: [u32; FRAME_COUNT as usize] = Default::default();
-        let render_targets: [ID3D12Resource; FRAME_COUNT as usize] =
-            array_init::try_array_init(|i: usize| -> Result<ID3D12Resource> {
-                let render_target: ID3D12Resource = unsafe { swap_chain.GetBuffer(i as u32) }?;
-                let (rtv_index, rtv_handle) = rtv_heap.allocate_handle()?;
-                rtv_indices[i] = rtv_index;
-                unsafe {
-                    device.CreateRenderTargetView(&render_target, std::ptr::null(), rtv_handle)
-                };
-                Ok(render_target)
-            })?;
-
-        let viewport = D3D12_VIEWPORT {
-            TopLeftX: 0.0,
-            TopLeftY: 0.0,
-            Width: width as f32,
-            Height: height as f32,
-            MinDepth: D3D12_MIN_DEPTH,
-            MaxDepth: D3D12_MAX_DEPTH,
-        };
-
-        let scissor_rect = RECT {
-            left: 0,
-            top: 0,
-            right: width as i32,
-            bottom: height as i32,
-        };
 
         let command_allocators: [ID3D12CommandAllocator; FRAME_COUNT as usize] =
             array_init::try_array_init(|_| -> Result<ID3D12CommandAllocator> {
@@ -366,7 +327,8 @@ impl Renderer {
             Format: DXGI_FORMAT_R32_UINT,
         };
 
-        let mut srv_heap = DescriptorHeap::shader_resource_view_heap(&device, FRAME_COUNT * 10)?;
+        let mut srv_heap =
+            DescriptorHeap::shader_resource_view_heap(&device, FRAME_COUNT as u32 * 10)?;
 
         // TEXTURE UPLOAD
 
@@ -714,15 +676,38 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn resize(&mut self, _size: (u32, u32)) {
+    pub fn resize(&mut self, extent: (u32, u32)) -> Result<()> {
+        ensure!(self.resources.is_some());
+        //self.wait_for_idle().expect("All GPU work done");
+        //let resources = self.resources.as_mut().unwrap();
 
-        // TODO: Implement this
+        //resources.render_targets = Vec::new();
+
+        //let rtv_handles: [D3D12_CPU_DESCRIPTOR_HANDLE; FRAME_COUNT] =
+        //    array_init::try_array_init(|i| resources.rtv_heap.get_cpu_handle(i as u32))?;
+        //let (render_targets, viewport, scissor_rect) = resize_swapchain(
+        //    &resources.device,
+        //    &resources.swap_chain,
+        //    extent,
+        //    &rtv_handles,
+        //)?;
+
+        //resources.render_targets = render_targets;
+        //resources.viewport = viewport;
+        //resources.scissor_rect = scissor_rect;
+
+        Ok(())
     }
 
     pub fn wait_for_idle(&mut self) -> Result<()> {
         ensure!(self.resources.is_some());
         let resources = self.resources.as_mut().unwrap();
-        resources.graphics_queue.wait_for_idle()
+
+        for fence in resources.fence_values {
+            resources.graphics_queue.wait_for_fence_blocking(fence)?;
+        }
+        resources.graphics_queue.wait_for_idle()?;
+        resources.copy_queue.wait_for_idle()
     }
 
     pub fn render(&mut self) -> Result<()> {

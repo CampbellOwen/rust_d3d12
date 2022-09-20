@@ -16,7 +16,10 @@ fn main() {
 
     let hwnd = HWND(window.hwnd());
 
-    let PhysicalSize { width, height } = window.inner_size();
+    let PhysicalSize {
+        mut width,
+        mut height,
+    } = window.inner_size();
     let mut renderer = Renderer::new(hwnd, (width, height)).unwrap();
     let mut is_closing = false;
 
@@ -47,14 +50,35 @@ fn main() {
                     renderer = Renderer::null();
                     *control_flow = ControlFlow::Exit
                 }
-                WindowEvent::Resized(PhysicalSize { width, height }) => {
-                    renderer.resize((width, height))
+                WindowEvent::Resized(PhysicalSize {
+                    width: w,
+                    height: h,
+                }) => {
+                    if w != width || h != height {
+                        renderer
+                            .resize((width, height))
+                            .expect("Resizing should not fail");
+
+                        width = w;
+                        height = h;
+                    }
                 }
                 _ => (),
             },
             Event::MainEventsCleared => {
                 if !is_closing {
-                    renderer.render().unwrap()
+                    let res = renderer.render();
+                    if res.is_err() && renderer.resources.is_some() {
+                        unsafe {
+                            renderer
+                                .resources
+                                .as_ref()
+                                .unwrap()
+                                .device
+                                .GetDeviceRemovedReason()
+                                .unwrap()
+                        };
+                    }
                 }
             }
             _ => (),

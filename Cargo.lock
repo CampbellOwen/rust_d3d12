@@ -307,6 +307,7 @@ name = "d3d12_utils"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "array-init",
  "glam",
  "hassle-rs",
  "lazy_static",
