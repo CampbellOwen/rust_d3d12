@@ -5,7 +5,7 @@ use anyhow::{ensure, Ok, Result};
 use glam::Vec3;
 use image::io::Reader as ImageReader;
 
-use windows::core::{Interface, PCSTR};
+use windows::core::PCSTR;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
@@ -31,7 +31,9 @@ fn load_bunny() -> Result<(Vec<ObjVertex>, Vec<u32>)> {
 
 #[derive(Debug)]
 pub(crate) struct RendererResources {
+    #[allow(dead_code)]
     hwnd: HWND,
+    #[allow(dead_code)]
     dxgi_factory: IDXGIFactory5,
     pub(crate) device: ID3D12Device4,
 
@@ -676,7 +678,7 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn resize(&mut self, extent: (u32, u32)) -> Result<()> {
+    pub fn resize(&mut self, _extent: (u32, u32)) -> Result<()> {
         ensure!(self.resources.is_some());
         //self.wait_for_idle().expect("All GPU work done");
         //let resources = self.resources.as_mut().unwrap();

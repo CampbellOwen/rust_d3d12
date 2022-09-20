@@ -13,7 +13,7 @@ use windows::{
     },
 };
 
-use crate::{CommandQueue, DescriptorHeap};
+use crate::CommandQueue;
 
 pub fn get_hardware_adapter(
     factory: &IDXGIFactory5,
