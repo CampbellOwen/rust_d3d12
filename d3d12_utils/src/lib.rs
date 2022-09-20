@@ -15,3 +15,6 @@ pub use resource::*;
 
 mod heap;
 pub use heap::*;
+
+mod texture;
+pub use texture::*;

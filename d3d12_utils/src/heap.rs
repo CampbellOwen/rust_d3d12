@@ -1,5 +1,5 @@
 use anyhow::{ensure, Result};
-use windows::Win32::Graphics::Direct3D12::*;
+use windows::{core::PCWSTR, Win32::Graphics::Direct3D12::*};
 
 use crate::{align_data, Resource};
 
@@ -8,6 +8,8 @@ pub struct Heap {
     heap: ID3D12Heap,
     size: usize,
     curr_offset: usize,
+    name: String,
+    num_objects: usize,
 }
 
 impl Heap {
@@ -21,6 +23,7 @@ impl Heap {
         properties: D3D12_HEAP_PROPERTIES,
         alignment: u32,
         flags: D3D12_HEAP_FLAGS,
+        name: String,
     ) -> Result<Self> {
         let desc = D3D12_HEAP_DESC {
             SizeInBytes: size as u64,
@@ -37,10 +40,12 @@ impl Heap {
             heap,
             size,
             curr_offset: 0,
+            name,
+            num_objects: 0,
         })
     }
 
-    pub fn create_upload_heap(device: &ID3D12Device4, size: usize) -> Result<Self> {
+    pub fn create_upload_heap(device: &ID3D12Device4, size: usize, name: &str) -> Result<Self> {
         Self::new(
             device,
             size,
@@ -50,10 +55,11 @@ impl Heap {
             },
             D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
             D3D12_HEAP_FLAG_NONE,
+            name.to_string(),
         )
     }
 
-    pub fn create_default_heap(device: &ID3D12Device4, size: usize) -> Result<Self> {
+    pub fn create_default_heap(device: &ID3D12Device4, size: usize, name: &str) -> Result<Self> {
         Self::new(
             device,
             size,
@@ -63,6 +69,7 @@ impl Heap {
             },
             D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
             D3D12_HEAP_FLAG_NONE,
+            name.to_string(),
         )
     }
 
@@ -73,6 +80,8 @@ impl Heap {
         initial_state: D3D12_RESOURCE_STATES,
         mapped: bool,
     ) -> Result<Resource> {
+        self.num_objects += 1;
+
         let resource_size = desc.Width as usize * desc.Height as usize;
 
         let allocation_info = unsafe { device.GetResourceAllocationInfo(0, &[*desc]) };
@@ -100,6 +109,12 @@ impl Heap {
             )?;
         }
         let resource = resource.unwrap();
+
+        unsafe {
+            resource.SetName(PCWSTR::from(
+                &format!("{} - #{}", self.name, self.num_objects).into(),
+            ))?;
+        }
 
         self.curr_offset += total_size;
 

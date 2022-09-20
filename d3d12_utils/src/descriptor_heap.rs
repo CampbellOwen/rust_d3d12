@@ -37,7 +37,7 @@ impl DescriptorHeap {
         })
     }
 
-    pub fn constant_buffer_view_heap(
+    pub fn shader_resource_view_heap(
         device: &ID3D12Device4,
         num_descriptors: u32,
     ) -> Result<DescriptorHeap> {
@@ -73,7 +73,7 @@ impl DescriptorHeap {
         )
     }
 
-    pub fn allocate_handle(&mut self) -> Result<D3D12_CPU_DESCRIPTOR_HANDLE> {
+    pub fn allocate_handle(&mut self) -> Result<(u32, D3D12_CPU_DESCRIPTOR_HANDLE)> {
         ensure!(
             self.num_allocated < self.num_descriptors,
             "Not enough descriptors"
@@ -86,7 +86,7 @@ impl DescriptorHeap {
 
         self.num_allocated += 1;
 
-        Ok(handle)
+        Ok((self.num_allocated - 1, handle))
     }
 
     pub fn get_cpu_handle(&self, index: u32) -> Result<D3D12_CPU_DESCRIPTOR_HANDLE> {

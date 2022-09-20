@@ -73,24 +73,51 @@ pub fn create_descriptor_table(
 }
 
 pub fn create_root_signature(device: &ID3D12Device4) -> Result<ID3D12RootSignature> {
-    let descriptor_ranges = [D3D12_DESCRIPTOR_RANGE {
-        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-        NumDescriptors: 1,
-        BaseShaderRegister: 0,
+    let root_parameters = [
+        create_descriptor_table(
+            D3D12_SHADER_VISIBILITY_ALL,
+            &[D3D12_DESCRIPTOR_RANGE {
+                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+                NumDescriptors: 1,
+                BaseShaderRegister: 0,
+                RegisterSpace: 0,
+                OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+            }],
+        ),
+        create_descriptor_table(
+            D3D12_SHADER_VISIBILITY_PIXEL,
+            &[D3D12_DESCRIPTOR_RANGE {
+                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+                NumDescriptors: 1,
+                BaseShaderRegister: 0,
+                RegisterSpace: 0,
+                OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+            }],
+        ),
+    ];
+
+    let static_samplers = [D3D12_STATIC_SAMPLER_DESC {
+        Filter: D3D12_FILTER_MIN_MAG_MIP_POINT,
+        AddressU: D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+        AddressV: D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+        AddressW: D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+        MipLODBias: 0.0f32,
+        MaxAnisotropy: 0,
+        ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
+        BorderColor: D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
+        MinLOD: 0.0f32,
+        MaxLOD: D3D12_FLOAT32_MAX,
+        ShaderRegister: 0,
         RegisterSpace: 0,
-        OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
     }];
 
-    let root_parameters = [create_descriptor_table(
-        D3D12_SHADER_VISIBILITY_ALL,
-        &descriptor_ranges,
-    )];
-
     let desc = D3D12_ROOT_SIGNATURE_DESC {
-        NumParameters: 1,
+        NumParameters: root_parameters.len() as u32,
         pParameters: root_parameters.as_ptr(),
         Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
-        ..Default::default()
+        pStaticSamplers: static_samplers.as_ptr(),
+        NumStaticSamplers: static_samplers.len() as u32,
     };
 
     let mut signature = None;

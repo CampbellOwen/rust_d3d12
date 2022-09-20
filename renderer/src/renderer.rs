@@ -1,7 +1,9 @@
 use std::f32::consts::PI;
+use std::ffi::c_void;
 
 use anyhow::{ensure, Ok, Result};
 use glam::Vec3;
+use image::io::Reader as ImageReader;
 
 use windows::core::{Interface, PCSTR};
 use windows::Win32::Foundation::{HWND, RECT};
@@ -49,7 +51,7 @@ struct RendererResources {
     frame_index: u32,
     render_targets: [ID3D12Resource; FRAME_COUNT as usize],
     rtv_heap: DescriptorHeap,
-    cbv_heap: DescriptorHeap,
+    srv_heap: DescriptorHeap,
     dsv_heap: DescriptorHeap,
     viewport: D3D12_VIEWPORT,
     scissor_rect: RECT,
@@ -61,12 +63,30 @@ struct RendererResources {
     vbv: D3D12_VERTEX_BUFFER_VIEW,
     ibv: D3D12_INDEX_BUFFER_VIEW,
 
+    rtv_indices: [u32; FRAME_COUNT as usize],
+    cbv_indices: [u32; FRAME_COUNT as usize],
+    dsv_indices: [u32; FRAME_COUNT as usize],
+    texture_srv_index: u32,
+
     #[allow(dead_code)]
-    vertex_buffer_heap: Heap,
+    scene_resources_heap: Heap,
+    #[allow(dead_code)]
+    texture_heap: Heap,
     #[allow(dead_code)]
     vertex_buffer: Resource,
     #[allow(dead_code)]
     index_buffer: Resource,
+
+    #[allow(dead_code)]
+    index_buffer_staging: Resource,
+    #[allow(dead_code)]
+    vertex_buffer_staging: Resource,
+
+    #[allow(dead_code)]
+    texture_staging: Resource,
+    #[allow(dead_code)]
+    texture: Resource,
+
     #[allow(dead_code)]
     constant_buffers: [Resource; FRAME_COUNT as usize],
     #[allow(dead_code)]
@@ -164,15 +184,14 @@ impl Renderer {
 
         let mut rtv_heap = DescriptorHeap::render_target_view_heap(&device, FRAME_COUNT)?;
 
+        let mut rtv_indices: [u32; FRAME_COUNT as usize] = Default::default();
         let render_targets: [ID3D12Resource; FRAME_COUNT as usize] =
             array_init::try_array_init(|i: usize| -> Result<ID3D12Resource> {
                 let render_target: ID3D12Resource = unsafe { swap_chain.GetBuffer(i as u32) }?;
+                let (rtv_index, rtv_handle) = rtv_heap.allocate_handle()?;
+                rtv_indices[i] = rtv_index;
                 unsafe {
-                    device.CreateRenderTargetView(
-                        &render_target,
-                        std::ptr::null(),
-                        rtv_heap.allocate_handle()?,
-                    )
+                    device.CreateRenderTargetView(&render_target, std::ptr::null(), rtv_handle)
                 };
                 Ok(render_target)
             })?;
@@ -244,9 +263,11 @@ impl Renderer {
         )?;
 
         let mut dsv_heap = DescriptorHeap::depth_stencil_view_heap(&device, 2)?;
-        let depth_buffers: [Tex2D; FRAME_COUNT as usize] = array_init::try_array_init(|_| {
+        let mut dsv_indices: [u32; FRAME_COUNT as usize] = Default::default();
+        let depth_buffers: [Tex2D; FRAME_COUNT as usize] = array_init::try_array_init(|i| {
             let buffer = create_depth_stencil_buffer(&device, width as usize, height as usize)?;
-
+            let (dsv_index, dsv_handle) = dsv_heap.allocate_handle()?;
+            dsv_indices[i] = dsv_index;
             unsafe {
                 device.CreateDepthStencilView(
                     &buffer.resource,
@@ -256,7 +277,7 @@ impl Renderer {
                         Flags: D3D12_DSV_FLAG_NONE,
                         ..Default::default()
                     },
-                    dsv_heap.allocate_handle()?,
+                    dsv_handle,
                 );
             }
 
@@ -271,7 +292,7 @@ impl Renderer {
             )
         }?;
 
-        let mut upload_heap = Heap::create_upload_heap(&device, 155569680)?;
+        let mut upload_heap = Heap::create_upload_heap(&device, 155569680, "Upload Heap")?;
         let (vertices, indices) = load_bunny()?;
 
         let vb_desc = D3D12_RESOURCE_DESC {
@@ -296,8 +317,9 @@ impl Renderer {
         )?;
         vertex_buffer_staging.copy_from(&vertices)?;
 
-        let mut vertex_buffer_heap = Heap::create_default_heap(&device, 155569680)?;
-        let vertex_buffer = vertex_buffer_heap.create_resource(
+        let mut scene_resources_heap =
+            Heap::create_default_heap(&device, 2e7 as usize, "Scene Resources Heap")?;
+        let vertex_buffer = scene_resources_heap.create_resource(
             &device,
             &vb_desc,
             D3D12_RESOURCE_STATE_COMMON,
@@ -331,7 +353,7 @@ impl Renderer {
         )?;
         index_buffer_staging.copy_from(&indices)?;
 
-        let index_buffer = vertex_buffer_heap.create_resource(
+        let index_buffer = scene_resources_heap.create_resource(
             &device,
             &index_buffer_desc,
             D3D12_RESOURCE_STATE_COMMON,
@@ -344,6 +366,132 @@ impl Renderer {
             Format: DXGI_FORMAT_R32_UINT,
         };
 
+        let mut srv_heap = DescriptorHeap::shader_resource_view_heap(&device, FRAME_COUNT * 10)?;
+
+        // TEXTURE UPLOAD
+
+        let mut texture_heap = Heap::create_default_heap(&device, 1e8 as usize, "Texture Heap")?;
+
+        let img = ImageReader::open(r"F:\Textures\uv_checker.png")?
+            .decode()?
+            .to_rgba8();
+
+        let texture_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Width: img.width() as u64,
+            Height: img.height(),
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            ..Default::default()
+        };
+
+        const MAX_NUM_SUBRESOURCES: usize = 10;
+
+        let mut layouts: [D3D12_PLACED_SUBRESOURCE_FOOTPRINT; MAX_NUM_SUBRESOURCES] =
+            Default::default();
+        let mut num_rows: [u32; MAX_NUM_SUBRESOURCES] = Default::default();
+        let mut row_size_bytes: [u64; MAX_NUM_SUBRESOURCES] = Default::default();
+        let mut total_bytes: [u64; MAX_NUM_SUBRESOURCES] = Default::default();
+
+        let num_subresources = 1;
+
+        unsafe {
+            device.GetCopyableFootprints(
+                &texture_desc,
+                0,
+                1,
+                0,
+                layouts.as_mut_ptr(),
+                num_rows.as_mut_ptr(),
+                row_size_bytes.as_mut_ptr(),
+                total_bytes.as_mut_ptr(),
+            );
+        }
+
+        // Copy Texture to Upload buffer
+        let size_bytes = (0..num_subresources).fold(0, |sum, i| sum + total_bytes[i]);
+
+        let texture_staging = upload_heap.create_resource(
+            &device,
+            &D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                Width: size_bytes,
+                Height: 1,
+                DepthOrArraySize: 1,
+                MipLevels: 1,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                ..Default::default()
+            },
+            D3D12_RESOURCE_STATE_COMMON,
+            true,
+        )?;
+
+        // Only 1 subresource for now
+        let subresource_index = 0;
+        let subresource_layout = &layouts[subresource_index];
+        let subresource_height = num_rows[subresource_index];
+        //let subresource_depth = subresource_layout.Footprint.Depth;
+        let subresource_pitch = align_data(
+            subresource_layout.Footprint.RowPitch as usize,
+            D3D12_TEXTURE_DATA_PITCH_ALIGNMENT as usize,
+        );
+
+        let mut resource_offset = subresource_layout.Offset;
+        let mut img_offset = 0;
+        let image_bytes = img.as_flat_samples().samples.as_ptr();
+        let row_size_bytes = img.width() as usize * std::mem::size_of::<u32>();
+        // Copy row by row to account for row pitch
+        for _ in 0..subresource_height {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    image_bytes.offset(img_offset) as _,
+                    texture_staging.mapped_data.offset(resource_offset as isize),
+                    row_size_bytes,
+                );
+            }
+
+            resource_offset += subresource_pitch as u64;
+            img_offset += row_size_bytes as isize;
+        }
+
+        let tex_resource = texture_heap.create_resource(
+            &device,
+            &texture_desc,
+            D3D12_RESOURCE_STATE_COMMON,
+            false,
+        )?;
+
+        let (texture_srv_idx, srv_handle) = srv_heap.allocate_handle()?;
+        unsafe {
+            device.CreateShaderResourceView(
+                &tex_resource.device_resource,
+                &D3D12_SHADER_RESOURCE_VIEW_DESC {
+                    Format: texture_desc.Format,
+                    ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+                    Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                    Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                        Texture2D: D3D12_TEX2D_SRV {
+                            MostDetailedMip: 0,
+                            MipLevels: 1,
+                            PlaneSlice: 0,
+                            ResourceMinLODClamp: 0.0f32,
+                        },
+                    },
+                },
+                srv_handle,
+            );
+        }
+
         unsafe {
             copy_command_list.Reset(&copy_command_allocator, None)?;
             copy_command_list.CopyResource(
@@ -354,13 +502,32 @@ impl Renderer {
                 &index_buffer.device_resource,
                 &index_buffer_staging.device_resource,
             );
+
+            copy_command_list.CopyTextureRegion(
+                &D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: Some(tex_resource.device_resource.clone()),
+                    Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        SubresourceIndex: subresource_index as u32,
+                    },
+                },
+                0,
+                0,
+                0,
+                &D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: Some(texture_staging.device_resource.clone()),
+                    Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        PlacedFootprint: layouts[0],
+                    },
+                },
+                std::ptr::null(),
+            );
             copy_command_list.Close()?;
         };
 
         let copy_fence = copy_queue.execute_command_list(&copy_command_list.clone().into())?;
         graphics_queue.insert_wait_for_queue_fence(&copy_queue, copy_fence)?;
-
-        let mut cbv_heap = DescriptorHeap::constant_buffer_view_heap(&device, FRAME_COUNT)?;
 
         let aspect_ratio = (width as f32) / (height as f32);
         let constant_buffer = [
@@ -373,46 +540,48 @@ impl Renderer {
             D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
         );
 
-        let constant_buffers: [Resource; FRAME_COUNT as usize] =
-            array_init::try_array_init(|_| {
-                //let buffer = create_constant_buffer(&device, constant_buffer_size)?;
-                let buffer = Resource::create_committed(
-                    &device,
-                    &D3D12_HEAP_PROPERTIES {
-                        Type: D3D12_HEAP_TYPE_UPLOAD,
-                        ..Default::default()
+        let mut cbv_indices: [u32; FRAME_COUNT as usize] = Default::default();
+        let constant_buffers: [Resource; FRAME_COUNT as usize] = array_init::try_array_init(|i| {
+            let buffer = Resource::create_committed(
+                &device,
+                &D3D12_HEAP_PROPERTIES {
+                    Type: D3D12_HEAP_TYPE_UPLOAD,
+                    ..Default::default()
+                },
+                &D3D12_RESOURCE_DESC {
+                    Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                    Width: constant_buffer_size as u64,
+                    Height: 1,
+                    DepthOrArraySize: 1,
+                    MipLevels: 1,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
                     },
-                    &D3D12_RESOURCE_DESC {
-                        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                        Width: constant_buffer_size as u64,
-                        Height: 1,
-                        DepthOrArraySize: 1,
-                        MipLevels: 1,
-                        SampleDesc: DXGI_SAMPLE_DESC {
-                            Count: 1,
-                            Quality: 0,
-                        },
-                        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-                        ..Default::default()
+                    Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                    ..Default::default()
+                },
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                true,
+            )?;
+
+            buffer.copy_from(&constant_buffer)?;
+
+            let (cbv_index, cbv_handle) = srv_heap.allocate_handle()?;
+            cbv_indices[i] = cbv_index;
+
+            unsafe {
+                device.CreateConstantBufferView(
+                    &D3D12_CONSTANT_BUFFER_VIEW_DESC {
+                        BufferLocation: buffer.gpu_address(),
+                        SizeInBytes: buffer.size as u32,
                     },
-                    D3D12_RESOURCE_STATE_GENERIC_READ,
-                    true,
-                )?;
+                    cbv_handle,
+                )
+            };
 
-                buffer.copy_from(&constant_buffer)?;
-
-                unsafe {
-                    device.CreateConstantBufferView(
-                        &D3D12_CONSTANT_BUFFER_VIEW_DESC {
-                            BufferLocation: buffer.gpu_address(),
-                            SizeInBytes: buffer.size as u32,
-                        },
-                        cbv_heap.allocate_handle()?,
-                    )
-                };
-
-                Ok(buffer)
-            })?;
+            Ok(buffer)
+        })?;
 
         let fence_values = [0; 2];
         let resources = RendererResources {
@@ -426,7 +595,7 @@ impl Renderer {
             frame_index,
             render_targets,
             rtv_heap,
-            cbv_heap,
+            srv_heap,
             dsv_heap,
             viewport,
             scissor_rect,
@@ -444,7 +613,16 @@ impl Renderer {
             depth_buffers,
             copy_command_allocator,
             copy_command_list,
-            vertex_buffer_heap,
+            scene_resources_heap,
+            texture_heap,
+            index_buffer_staging,
+            vertex_buffer_staging,
+            texture_staging,
+            texture: tex_resource,
+            rtv_indices,
+            cbv_indices,
+            dsv_indices,
+            texture_srv_index: texture_srv_idx,
         };
 
         let mut renderer = Renderer {
@@ -477,13 +655,20 @@ impl Renderer {
             command_list.Reset(command_allocator, &resources.pso)?;
         }
 
-        let cbv_gpu_handle = resources.cbv_heap.get_gpu_handle(resources.frame_index)?;
+        let cbv_gpu_handle = resources
+            .srv_heap
+            .get_gpu_handle(resources.cbv_indices[resources.frame_index as usize])?;
+
+        let texture_gpu_handle = resources
+            .srv_heap
+            .get_gpu_handle(resources.texture_srv_index)?;
 
         unsafe {
             command_list.SetGraphicsRootSignature(&resources.root_signature);
 
-            command_list.SetDescriptorHeaps(&[Some(resources.cbv_heap.heap.clone())]);
+            command_list.SetDescriptorHeaps(&[Some(resources.srv_heap.heap.clone())]);
             command_list.SetGraphicsRootDescriptorTable(0, cbv_gpu_handle);
+            command_list.SetGraphicsRootDescriptorTable(1, texture_gpu_handle);
 
             command_list.RSSetViewports(&[resources.viewport]);
             command_list.RSSetScissorRects(&[resources.scissor_rect]);
@@ -496,9 +681,13 @@ impl Renderer {
         );
         unsafe { command_list.ResourceBarrier(&[barrier]) };
 
-        let rtv_handle = resources.rtv_heap.get_cpu_handle(resources.frame_index)?;
+        let rtv_handle = resources
+            .rtv_heap
+            .get_cpu_handle(resources.rtv_indices[resources.frame_index as usize])?;
 
-        let dsv_handle = resources.dsv_heap.get_cpu_handle(resources.frame_index)?;
+        let dsv_handle = resources
+            .dsv_heap
+            .get_cpu_handle(resources.dsv_indices[resources.frame_index as usize])?;
         unsafe {
             command_list.OMSetRenderTargets(1, &rtv_handle, false, &dsv_handle);
         }
