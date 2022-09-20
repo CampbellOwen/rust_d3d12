@@ -8,7 +8,6 @@ pub struct Heap {
     heap: ID3D12Heap,
     size: usize,
     curr_offset: usize,
-    alignment: u32,
 }
 
 impl Heap {
@@ -38,7 +37,6 @@ impl Heap {
             heap,
             size,
             curr_offset: 0,
-            alignment,
         })
     }
 
@@ -76,40 +74,45 @@ impl Heap {
         mapped: bool,
     ) -> Result<Resource> {
         let resource_size = desc.Width as usize * desc.Height as usize;
+
+        let allocation_info = unsafe { device.GetResourceAllocationInfo(0, &[*desc]) };
+
+        let aligned_offset = align_data(self.curr_offset, allocation_info.Alignment as usize);
+
+        let total_size = (aligned_offset - self.curr_offset) + allocation_info.SizeInBytes as usize;
+
         ensure!(
-            resource_size < (self.size - self.curr_offset),
+            total_size < (self.size - self.curr_offset),
             "Not enough space in heap: {} bytes remaining, requested resource size {} bytes",
             (self.size - self.curr_offset),
-            resource_size
+            total_size
         );
 
-        let mut buffer: Option<ID3D12Resource> = None;
+        let mut resource: Option<ID3D12Resource> = None;
         unsafe {
             device.CreatePlacedResource(
                 &self.heap,
-                self.curr_offset as u64,
+                aligned_offset as u64,
                 desc,
                 initial_state,
                 std::ptr::null(),
-                &mut buffer,
+                &mut resource,
             )?;
         }
+        let resource = resource.unwrap();
 
-        self.curr_offset += resource_size;
-        self.curr_offset = align_data(self.curr_offset, self.alignment as usize);
-
-        let buffer = buffer.unwrap();
+        self.curr_offset += total_size;
 
         let mut mapped_data = std::ptr::null_mut();
 
         if mapped {
             unsafe {
-                buffer.Map(0, std::ptr::null(), &mut mapped_data)?;
+                resource.Map(0, std::ptr::null(), &mut mapped_data)?;
             }
         }
 
         Ok(Resource {
-            device_resource: buffer,
+            device_resource: resource,
             size: resource_size,
             mapped_data,
         })
