@@ -681,10 +681,42 @@ impl Renderer {
         //self.wait_for_idle().expect("All GPU work done");
         //let resources = self.resources.as_mut().unwrap();
 
+        //// Resetting the command allocator while the frame is being rendered is not okay
+        //for i in 0..FRAME_COUNT {
+        //    let command_allocator = &resources.command_allocators[i];
+        //    unsafe {
+        //        command_allocator.Reset()?;
+        //    }
+        //    let command_list = &resources.command_list;
+        //    unsafe {
+        //        command_list.Close();
+        //        command_list.Reset(command_allocator, &resources.pso)?;
+        //        command_list.Close();
+        //    }
+        //}
+
         //resources.render_targets = Vec::new();
 
+        //if cfg!(debug_assertions) {
+        //    if let std::result::Result::Ok(debug_interface) =
+        //        unsafe { DXGIGetDebugInterface1::<IDXGIDebug1>(0) }
+        //    {
+        //        unsafe {
+        //            debug_interface
+        //                .ReportLiveObjects(
+        //                    DXGI_DEBUG_ALL,
+        //                    DXGI_DEBUG_RLO_DETAIL | DXGI_DEBUG_RLO_IGNORE_INTERNAL,
+        //                )
+        //                .expect("Report live objects")
+        //        };
+        //    }
+        //}
+
         //let rtv_handles: [D3D12_CPU_DESCRIPTOR_HANDLE; FRAME_COUNT] =
-        //    array_init::try_array_init(|i| resources.rtv_heap.get_cpu_handle(i as u32))?;
+        //    array_init::try_array_init(|i| {
+        //        let handle = resources.rtv_heap.get_cpu_handle(i as u32)?;
+        //        Ok(handle)
+        //    })?;
         //let (render_targets, viewport, scissor_rect) = resize_swapchain(
         //    &resources.device,
         //    &resources.swap_chain,
@@ -692,9 +724,34 @@ impl Renderer {
         //    &rtv_handles,
         //)?;
 
+        //let (width, height) = extent;
+
+        //let depth_buffers: [Tex2D; FRAME_COUNT as usize] = array_init::try_array_init(|i| {
+        //    let buffer =
+        //        create_depth_stencil_buffer(&resources.device, width as usize, height as usize)?;
+        //    let dsv_handle = resources
+        //        .dsv_heap
+        //        .get_cpu_handle(resources.dsv_indices[i])?;
+        //    unsafe {
+        //        resources.device.CreateDepthStencilView(
+        //            &buffer.resource,
+        //            &D3D12_DEPTH_STENCIL_VIEW_DESC {
+        //                Format: DXGI_FORMAT_D32_FLOAT,
+        //                ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
+        //                Flags: D3D12_DSV_FLAG_NONE,
+        //                ..Default::default()
+        //            },
+        //            dsv_handle,
+        //        );
+        //    }
+
+        //    Ok(buffer)
+        //})?;
+
         //resources.render_targets = render_targets;
         //resources.viewport = viewport;
         //resources.scissor_rect = scissor_rect;
+        //resources.depth_buffers = depth_buffers;
 
         Ok(())
     }
