@@ -101,6 +101,18 @@ impl Renderer {
 
         let device = create_device(&adapter, feature_level)?;
 
+        let data_options = D3D12_FEATURE_DATA_D3D12_OPTIONS {
+            ResourceHeapTier: D3D12_RESOURCE_HEAP_TIER_2,
+            ..Default::default()
+        };
+        unsafe {
+            device.CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS,
+                std::ptr::addr_of!(data_options) as *mut c_void,
+                std::mem::size_of_val(&data_options) as u32,
+            )?;
+        }
+
         let (width, height) = window_size;
 
         let graphics_queue = CommandQueue::new(&device, D3D12_COMMAND_LIST_TYPE_DIRECT)?;
