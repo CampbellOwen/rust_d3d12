@@ -56,6 +56,22 @@ pub fn create_device(
     Ok(device.unwrap())
 }
 
+pub fn create_descriptor_table(
+    shader_visiblity: D3D12_SHADER_VISIBILITY,
+    descriptor_ranges: &[D3D12_DESCRIPTOR_RANGE],
+) -> D3D12_ROOT_PARAMETER {
+    D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+        ShaderVisibility: shader_visiblity,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                NumDescriptorRanges: descriptor_ranges.len() as u32,
+                pDescriptorRanges: descriptor_ranges.as_ptr(),
+            },
+        },
+    }
+}
+
 pub fn create_root_signature(device: &ID3D12Device4) -> Result<ID3D12RootSignature> {
     let descriptor_ranges = [D3D12_DESCRIPTOR_RANGE {
         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
@@ -65,16 +81,10 @@ pub fn create_root_signature(device: &ID3D12Device4) -> Result<ID3D12RootSignatu
         OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
     }];
 
-    let root_parameters = [D3D12_ROOT_PARAMETER {
-        ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-        Anonymous: D3D12_ROOT_PARAMETER_0 {
-            DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
-                NumDescriptorRanges: 1,
-                pDescriptorRanges: descriptor_ranges.as_ptr(),
-            },
-        },
-    }];
+    let root_parameters = [create_descriptor_table(
+        D3D12_SHADER_VISIBILITY_ALL,
+        &descriptor_ranges,
+    )];
 
     let desc = D3D12_ROOT_SIGNATURE_DESC {
         NumParameters: 1,
