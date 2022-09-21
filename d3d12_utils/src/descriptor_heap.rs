@@ -5,21 +5,21 @@ use windows::Win32::Graphics::Direct3D12::*;
 pub struct DescriptorHeap {
     pub heap: ID3D12DescriptorHeap,
     descriptor_size: usize,
-    num_descriptors: u32,
+    num_descriptors: usize,
 
-    num_allocated: u32,
+    num_allocated: usize,
 }
 
 impl DescriptorHeap {
     fn create_heap(
         device: &ID3D12Device4,
-        num_descriptors: u32,
+        num_descriptors: usize,
         heap_type: D3D12_DESCRIPTOR_HEAP_TYPE,
         flags: D3D12_DESCRIPTOR_HEAP_FLAGS,
     ) -> Result<DescriptorHeap> {
         let heap: ID3D12DescriptorHeap = unsafe {
             device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
-                NumDescriptors: num_descriptors,
+                NumDescriptors: num_descriptors as u32,
                 Type: heap_type,
                 Flags: flags,
                 ..Default::default()
@@ -37,9 +37,9 @@ impl DescriptorHeap {
         })
     }
 
-    pub fn shader_resource_view_heap(
+    pub fn resource_descriptor_heap(
         device: &ID3D12Device4,
-        num_descriptors: u32,
+        num_descriptors: usize,
     ) -> Result<DescriptorHeap> {
         Self::create_heap(
             device,
@@ -51,7 +51,7 @@ impl DescriptorHeap {
 
     pub fn render_target_view_heap(
         device: &ID3D12Device4,
-        num_descriptors: u32,
+        num_descriptors: usize,
     ) -> Result<DescriptorHeap> {
         Self::create_heap(
             device,
@@ -63,7 +63,7 @@ impl DescriptorHeap {
 
     pub fn depth_stencil_view_heap(
         device: &ID3D12Device4,
-        num_descriptors: u32,
+        num_descriptors: usize,
     ) -> Result<DescriptorHeap> {
         Self::create_heap(
             device,
@@ -73,7 +73,7 @@ impl DescriptorHeap {
         )
     }
 
-    pub fn allocate_handle(&mut self) -> Result<(u32, D3D12_CPU_DESCRIPTOR_HANDLE)> {
+    pub fn allocate_handle(&mut self) -> Result<(usize, D3D12_CPU_DESCRIPTOR_HANDLE)> {
         ensure!(
             self.num_allocated < self.num_descriptors,
             "Not enough descriptors"
@@ -89,7 +89,7 @@ impl DescriptorHeap {
         Ok((self.num_allocated - 1, handle))
     }
 
-    pub fn get_cpu_handle(&self, index: u32) -> Result<D3D12_CPU_DESCRIPTOR_HANDLE> {
+    pub fn get_cpu_handle(&self, index: usize) -> Result<D3D12_CPU_DESCRIPTOR_HANDLE> {
         ensure!(index < self.num_allocated, "index out of bounds");
 
         let heap_start_handle = unsafe { self.heap.GetCPUDescriptorHandleForHeapStart() };
@@ -98,7 +98,7 @@ impl DescriptorHeap {
         })
     }
 
-    pub fn get_gpu_handle(&self, index: u32) -> Result<D3D12_GPU_DESCRIPTOR_HANDLE> {
+    pub fn get_gpu_handle(&self, index: usize) -> Result<D3D12_GPU_DESCRIPTOR_HANDLE> {
         ensure!(index < self.num_allocated, "index out of bounds");
 
         let heap_start_handle = unsafe { self.heap.GetGPUDescriptorHandleForHeapStart() };

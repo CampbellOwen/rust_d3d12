@@ -55,10 +55,12 @@ pub(crate) struct RendererResources {
     vbv: D3D12_VERTEX_BUFFER_VIEW,
     ibv: D3D12_INDEX_BUFFER_VIEW,
 
-    rtv_indices: [u32; FRAME_COUNT as usize],
-    cbv_indices: [u32; FRAME_COUNT as usize],
-    dsv_indices: [u32; FRAME_COUNT as usize],
-    texture_srv_index: u32,
+    rtv_indices: [usize; FRAME_COUNT as usize],
+    cbv_indices: [usize; FRAME_COUNT as usize],
+    dsv_indices: [usize; FRAME_COUNT as usize],
+    texture_srv_index: usize,
+
+    upload_ring_buffer: UploadRingBuffer,
 
     #[allow(dead_code)]
     resource_descriptor_heap: Heap,
@@ -124,15 +126,15 @@ impl Renderer {
 
         let mut upload_ring_buffer = UploadRingBuffer::new(&device, None, None)?;
 
-        let mut rtv_heap = DescriptorHeap::render_target_view_heap(&device, FRAME_COUNT as u32)?;
+        let mut rtv_heap = DescriptorHeap::render_target_view_heap(&device, FRAME_COUNT)?;
 
-        let rtv_indices: [u32; FRAME_COUNT] = array_init::try_array_init(|_| -> Result<u32> {
+        let rtv_indices: [usize; FRAME_COUNT] = array_init::try_array_init(|_| -> Result<usize> {
             let (index, _) = rtv_heap.allocate_handle()?;
             Ok(index)
         })?;
 
         let rtv_handles: [D3D12_CPU_DESCRIPTOR_HANDLE; FRAME_COUNT] =
-            array_init::try_array_init(|i| rtv_heap.get_cpu_handle(i as u32))?;
+            array_init::try_array_init(|i| rtv_heap.get_cpu_handle(i))?;
 
         let (swap_chain, render_targets, viewport, scissor_rect) = create_swapchain_and_views(
             hwnd,
@@ -200,7 +202,7 @@ impl Renderer {
         )?;
 
         let mut dsv_heap = DescriptorHeap::depth_stencil_view_heap(&device, 2)?;
-        let mut dsv_indices: [u32; FRAME_COUNT as usize] = Default::default();
+        let mut dsv_indices: [usize; FRAME_COUNT as usize] = Default::default();
         let depth_buffers: [Tex2D; FRAME_COUNT as usize] = array_init::try_array_init(|i| {
             let buffer = create_depth_stencil_buffer(&device, width as usize, height as usize)?;
             let (dsv_index, dsv_handle) = dsv_heap.allocate_handle()?;
@@ -301,8 +303,7 @@ impl Renderer {
             Format: DXGI_FORMAT_R32_UINT,
         };
 
-        let mut srv_heap =
-            DescriptorHeap::shader_resource_view_heap(&device, FRAME_COUNT as u32 * 10)?;
+        let mut srv_heap = DescriptorHeap::resource_descriptor_heap(&device, FRAME_COUNT * 10)?;
 
         // TEXTURE UPLOAD
 
@@ -408,7 +409,6 @@ impl Renderer {
         }
 
         layouts[0].Offset += upload.sub_resource.offset as u64;
-        let upload = upload_ring_buffer.allocate(1)?;
         unsafe {
             upload.command_list.CopyTextureRegion(
                 &D3D12_TEXTURE_COPY_LOCATION {
@@ -444,8 +444,8 @@ impl Renderer {
             D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
         );
 
-        let mut cbv_indices: [u32; FRAME_COUNT as usize] = Default::default();
-        let constant_buffers: [Resource; FRAME_COUNT as usize] = array_init::try_array_init(|i| {
+        let mut cbv_indices: [usize; FRAME_COUNT] = Default::default();
+        let constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
             let buffer = Resource::create_committed(
                 &device,
                 &D3D12_HEAP_PROPERTIES {
@@ -521,6 +521,7 @@ impl Renderer {
             cbv_indices,
             dsv_indices,
             texture_srv_index: texture_srv_idx,
+            upload_ring_buffer,
         };
 
         let mut renderer = Renderer {
@@ -729,6 +730,8 @@ impl Renderer {
         unsafe { resources.swap_chain.Present(1, 0) }.ok()?;
 
         resources.frame_index = unsafe { resources.swap_chain.GetCurrentBackBufferIndex() };
+
+        resources.upload_ring_buffer.clean_up_submissions()?;
 
         Ok(())
     }

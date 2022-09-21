@@ -6,6 +6,7 @@ use windows::{
 
 use crate::{align_data, CommandQueue, Heap, Resource, SubResource};
 
+#[derive(Debug)]
 struct Submission {
     command_allocator: ID3D12CommandAllocator,
     command_list: ID3D12GraphicsCommandList1,
@@ -41,9 +42,17 @@ impl Submission {
             padding: 0,
         })
     }
+
+    pub fn reset(&mut self) {
+        self.fence_value = 0;
+        self.offset = 0;
+        self.size = 0;
+        self.padding = 0;
+    }
 }
 
 const MAX_NUMBER_SUBMISSIONS: usize = 16;
+#[derive(Debug)]
 pub struct UploadRingBuffer {
     buffer_size: usize,
     buffer: Resource,
@@ -52,7 +61,7 @@ pub struct UploadRingBuffer {
     buffer_tail: usize,
 
     submissions: [Submission; MAX_NUMBER_SUBMISSIONS],
-    submissions_head: usize,
+    submissions_start: usize,
     submissions_used: usize,
 
     upload_queue: CommandQueue,
@@ -134,7 +143,7 @@ impl UploadRingBuffer {
             buffer_head: 0,
             buffer_tail: 0,
 
-            submissions_head: 0,
+            submissions_start: 0,
             submissions_used: 0,
 
             upload_queue,
@@ -144,6 +153,11 @@ impl UploadRingBuffer {
     pub fn allocate(&mut self, size: usize) -> Result<Upload> {
         let raw_size = size; // Keep track of the actual size of the user data
         let size = align_data(size, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT as usize);
+
+        if self.submissions_used >= MAX_NUMBER_SUBMISSIONS {
+            self.clean_up_submissions()?;
+        }
+
         ensure!(self.submissions_used < MAX_NUMBER_SUBMISSIONS);
         ensure!(size < self.buffer_size);
         ensure!((self.buffer_head + size < self.buffer_size) || size < self.buffer_tail);
@@ -157,7 +171,7 @@ impl UploadRingBuffer {
         self.buffer_head = offset + size;
 
         let submission_index =
-            (self.submissions_head + self.submissions_used) % self.submissions.len();
+            (self.submissions_start + self.submissions_used) % self.submissions.len();
         self.submissions_used += 1;
 
         let submission = &mut self.submissions[submission_index];
@@ -192,5 +206,38 @@ impl UploadRingBuffer {
         }
 
         Ok(())
+    }
+
+    pub fn clean_up_submissions(&mut self) -> Result<()> {
+        let start_idx = self.submissions_start;
+        let num_submissions = self.submissions_used;
+        for i in 0..num_submissions {
+            let index = (start_idx + i) % MAX_NUMBER_SUBMISSIONS;
+
+            let submission = &mut self.submissions[index];
+            let fence = submission.fence_value;
+            if self.upload_queue.is_fence_complete(fence) {
+                ensure!(self.buffer_tail == submission.offset);
+
+                if self.buffer_tail + submission.size + submission.padding > self.buffer_size {
+                    self.buffer_tail = 0;
+                } else {
+                    self.buffer_tail += submission.size + submission.padding;
+                }
+
+                self.submissions_start = (self.submissions_start + 1) % MAX_NUMBER_SUBMISSIONS;
+                self.submissions_used -= 1;
+
+                submission.reset();
+            } else {
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn wait_on_pending(&mut self) {
+        todo!()
     }
 }

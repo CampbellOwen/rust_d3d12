@@ -16,8 +16,11 @@ pub use resource::*;
 mod heap;
 pub use heap::*;
 
-mod texture;
-pub use texture::*;
+mod texture_manager;
+pub use texture_manager::*;
 
 mod upload_ring_buffer;
 pub use upload_ring_buffer::*;
+
+mod descriptor_manager;
+pub use descriptor_manager::*;
