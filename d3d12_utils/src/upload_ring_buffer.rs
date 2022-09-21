@@ -12,6 +12,7 @@ struct Submission {
     fence_value: u64,
     offset: usize,
     size: usize,
+    padding: usize,
 }
 
 impl Submission {
@@ -37,6 +38,7 @@ impl Submission {
             fence_value: 0,
             offset: 0,
             size: 0,
+            padding: 0,
         })
     }
 }
@@ -57,8 +59,28 @@ pub struct UploadRingBuffer {
 }
 
 pub struct Upload<'resource> {
-    sub_resource: SubResource<'resource>,
+    pub sub_resource: SubResource<'resource>,
     submission: &'resource mut Submission,
+    pub command_list: ID3D12GraphicsCommandList1,
+    upload_queue: &'resource mut CommandQueue,
+}
+
+impl<'a> Upload<'a> {
+    pub fn submit(self, dependent_queue: Option<&CommandQueue>) -> Result<()> {
+        unsafe {
+            self.submission.command_list.Close()?;
+        }
+        let fence_value = self
+            .upload_queue
+            .execute_command_list(&self.submission.command_list.clone().into())?;
+        self.submission.fence_value = fence_value;
+
+        if let Some(queue) = dependent_queue {
+            queue.insert_wait_for_queue_fence(self.upload_queue, fence_value)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl UploadRingBuffer {
@@ -120,6 +142,7 @@ impl UploadRingBuffer {
     }
 
     pub fn allocate(&mut self, size: usize) -> Result<Upload> {
+        let raw_size = size; // Keep track of the actual size of the user data
         let size = align_data(size, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT as usize);
         ensure!(self.submissions_used < MAX_NUMBER_SUBMISSIONS);
         ensure!(size < self.buffer_size);
@@ -145,10 +168,16 @@ impl UploadRingBuffer {
                 .command_list
                 .Reset(&submission.command_allocator, None)?;
         }
+        submission.offset = offset;
+        submission.padding = size - raw_size;
+        submission.size = raw_size;
 
+        let command_list = submission.command_list.clone();
         Ok(Upload {
-            sub_resource: self.buffer.create_sub_resource(size, offset)?,
+            sub_resource: self.buffer.create_sub_resource(raw_size, offset)?,
             submission,
+            command_list,
+            upload_queue: &mut self.upload_queue,
         })
     }
 

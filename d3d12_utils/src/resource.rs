@@ -12,9 +12,9 @@ pub struct Resource {
 
 #[derive(Debug)]
 pub struct SubResource<'resource> {
-    resource: &'resource Resource,
-    size: usize,
-    offset: usize,
+    pub resource: &'resource Resource,
+    pub size: usize,
+    pub offset: usize,
 }
 
 impl<'resource> SubResource<'resource> {
@@ -27,15 +27,55 @@ impl<'resource> SubResource<'resource> {
     }
 
     pub fn copy_from<T: Sized>(&self, data: &[T]) -> Result<()> {
+        self.copy_to_offset_from(0, data)
+    }
+
+    pub fn copy_to_offset_from<T: Sized>(&self, offset: usize, data: &[T]) -> Result<()> {
         let data_size_bytes = std::mem::size_of_val(data);
         ensure!(data_size_bytes <= self.size, "Resource is not big enough");
 
         let mapped_data = self.get_mapped_data().context("Data not mapped")?;
+        let dst = unsafe { mapped_data.add(offset) as *mut u8 };
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr() as *mut u8,
-                mapped_data as *mut u8,
-                data_size_bytes,
+            std::ptr::copy_nonoverlapping(data.as_ptr() as *mut u8, dst, data_size_bytes);
+        }
+
+        Ok(())
+    }
+
+    pub fn copy_to_resource(
+        &self,
+        command_list: &ID3D12GraphicsCommandList1,
+        resource: &Resource,
+    ) -> Result<()> {
+        ensure!(self.size <= resource.size);
+        unsafe {
+            command_list.CopyBufferRegion(
+                &resource.device_resource,
+                0,
+                &self.resource.device_resource,
+                self.offset as u64,
+                self.size as u64,
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn copy_to_sub_resource(
+        &self,
+        command_list: &ID3D12GraphicsCommandList1,
+        sub_resource: &SubResource,
+    ) -> Result<()> {
+        ensure!(self.size <= sub_resource.size);
+
+        unsafe {
+            command_list.CopyBufferRegion(
+                &sub_resource.resource.device_resource,
+                sub_resource.offset as u64,
+                &self.resource.device_resource,
+                self.offset as u64,
+                self.size as u64,
             );
         }
 

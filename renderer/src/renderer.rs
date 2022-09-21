@@ -39,13 +39,6 @@ pub(crate) struct RendererResources {
 
     graphics_queue: CommandQueue,
 
-    #[allow(dead_code)]
-    copy_queue: CommandQueue,
-    #[allow(dead_code)]
-    copy_command_allocator: ID3D12CommandAllocator,
-    #[allow(dead_code)]
-    copy_command_list: ID3D12GraphicsCommandList,
-
     swap_chain: IDXGISwapChain3,
     frame_index: u32,
     render_targets: Vec<ID3D12Resource>,
@@ -68,7 +61,7 @@ pub(crate) struct RendererResources {
     texture_srv_index: u32,
 
     #[allow(dead_code)]
-    scene_resources_heap: Heap,
+    resource_descriptor_heap: Heap,
     #[allow(dead_code)]
     texture_heap: Heap,
     #[allow(dead_code)]
@@ -76,13 +69,6 @@ pub(crate) struct RendererResources {
     #[allow(dead_code)]
     index_buffer: Resource,
 
-    #[allow(dead_code)]
-    index_buffer_staging: Resource,
-    #[allow(dead_code)]
-    vertex_buffer_staging: Resource,
-
-    #[allow(dead_code)]
-    texture_staging: Resource,
     #[allow(dead_code)]
     texture: Resource,
 
@@ -136,19 +122,7 @@ impl Renderer {
 
         let graphics_queue = CommandQueue::new(&device, D3D12_COMMAND_LIST_TYPE_DIRECT)?;
 
-        let mut copy_queue = CommandQueue::new(&device, D3D12_COMMAND_LIST_TYPE_COPY)?;
-        let copy_command_allocator: ID3D12CommandAllocator =
-            unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY) }?;
-        unsafe {
-            copy_command_allocator.Reset()?;
-        }
-        let copy_command_list: ID3D12GraphicsCommandList = unsafe {
-            device.CreateCommandList1(
-                0,
-                D3D12_COMMAND_LIST_TYPE_COPY,
-                D3D12_COMMAND_LIST_FLAG_NONE,
-            )
-        }?;
+        let mut upload_ring_buffer = UploadRingBuffer::new(&device, None, None)?;
 
         let mut rtv_heap = DescriptorHeap::render_target_view_heap(&device, FRAME_COUNT as u32)?;
 
@@ -255,7 +229,6 @@ impl Renderer {
             )
         }?;
 
-        let mut upload_heap = Heap::create_upload_heap(&device, 155569680, "Upload Heap")?;
         let (vertices, indices) = load_bunny()?;
 
         let vb_desc = D3D12_RESOURCE_DESC {
@@ -272,17 +245,9 @@ impl Renderer {
             ..Default::default()
         };
 
-        let vertex_buffer_staging = upload_heap.create_resource(
-            &device,
-            &vb_desc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            true,
-        )?;
-        vertex_buffer_staging.copy_from(&vertices)?;
-
-        let mut scene_resources_heap =
+        let mut resource_descriptor_heap =
             Heap::create_default_heap(&device, 2e7 as usize, "Scene Resources Heap")?;
-        let vertex_buffer = scene_resources_heap.create_resource(
+        let vertex_buffer = resource_descriptor_heap.create_resource(
             &device,
             &vb_desc,
             D3D12_RESOURCE_STATE_COMMON,
@@ -294,6 +259,13 @@ impl Renderer {
             StrideInBytes: std::mem::size_of::<ObjVertex>() as u32,
             SizeInBytes: std::mem::size_of_val(vertices.as_slice()) as u32,
         };
+
+        let upload = upload_ring_buffer.allocate(std::mem::size_of_val(vertices.as_slice()))?;
+        upload.sub_resource.copy_from(&vertices)?;
+        upload
+            .sub_resource
+            .copy_to_resource(&upload.command_list, &vertex_buffer)?;
+        upload.submit(Some(&graphics_queue))?;
 
         let index_buffer_desc = D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
@@ -308,20 +280,20 @@ impl Renderer {
             Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
             ..Default::default()
         };
-        let index_buffer_staging = upload_heap.create_resource(
-            &device,
-            &index_buffer_desc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            true,
-        )?;
-        index_buffer_staging.copy_from(&indices)?;
 
-        let index_buffer = scene_resources_heap.create_resource(
+        let index_buffer = resource_descriptor_heap.create_resource(
             &device,
             &index_buffer_desc,
             D3D12_RESOURCE_STATE_COMMON,
             false,
         )?;
+
+        let upload = upload_ring_buffer.allocate(index_buffer_desc.Width as usize)?;
+        upload.sub_resource.copy_from(&indices)?;
+        upload
+            .sub_resource
+            .copy_to_resource(&upload.command_list, &index_buffer)?;
+        upload.submit(Some(&graphics_queue))?;
 
         let ibv = D3D12_INDEX_BUFFER_VIEW {
             BufferLocation: index_buffer.gpu_address(),
@@ -360,8 +332,8 @@ impl Renderer {
         let mut layouts: [D3D12_PLACED_SUBRESOURCE_FOOTPRINT; MAX_NUM_SUBRESOURCES] =
             Default::default();
         let mut num_rows: [u32; MAX_NUM_SUBRESOURCES] = Default::default();
-        let mut row_size_bytes: [u64; MAX_NUM_SUBRESOURCES] = Default::default();
-        let mut total_bytes: [u64; MAX_NUM_SUBRESOURCES] = Default::default();
+        let mut row_size_bytes = 0;
+        let mut total_bytes = 0;
 
         let num_subresources = 1;
 
@@ -373,32 +345,14 @@ impl Renderer {
                 0,
                 layouts.as_mut_ptr(),
                 num_rows.as_mut_ptr(),
-                row_size_bytes.as_mut_ptr(),
-                total_bytes.as_mut_ptr(),
+                &mut row_size_bytes,
+                &mut total_bytes,
             );
         }
 
         // Copy Texture to Upload buffer
-        let size_bytes = (0..num_subresources).fold(0, |sum, i| sum + total_bytes[i]);
 
-        let texture_staging = upload_heap.create_resource(
-            &device,
-            &D3D12_RESOURCE_DESC {
-                Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                Width: size_bytes,
-                Height: 1,
-                DepthOrArraySize: 1,
-                MipLevels: 1,
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-                ..Default::default()
-            },
-            D3D12_RESOURCE_STATE_COMMON,
-            true,
-        )?;
+        let upload = upload_ring_buffer.allocate(total_bytes as usize)?;
 
         // Only 1 subresource for now
         let subresource_index = 0;
@@ -412,20 +366,17 @@ impl Renderer {
 
         let mut resource_offset = subresource_layout.Offset;
         let mut img_offset = 0;
-        let image_bytes = img.as_flat_samples().samples.as_ptr();
         let row_size_bytes = img.width() as usize * std::mem::size_of::<u32>();
+        let img_samples = img.as_flat_samples().samples;
         // Copy row by row to account for row pitch
         for _ in 0..subresource_height {
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    image_bytes.offset(img_offset) as _,
-                    texture_staging.mapped_data.offset(resource_offset as isize),
-                    row_size_bytes,
-                );
-            }
+            upload.sub_resource.copy_to_offset_from(
+                resource_offset as usize,
+                &img_samples[img_offset..(img_offset + row_size_bytes)],
+            )?;
 
             resource_offset += subresource_pitch as u64;
-            img_offset += row_size_bytes as isize;
+            img_offset += row_size_bytes;
         }
 
         let tex_resource = texture_heap.create_resource(
@@ -456,18 +407,10 @@ impl Renderer {
             );
         }
 
+        layouts[0].Offset += upload.sub_resource.offset as u64;
+        let upload = upload_ring_buffer.allocate(1)?;
         unsafe {
-            copy_command_list.Reset(&copy_command_allocator, None)?;
-            copy_command_list.CopyResource(
-                &vertex_buffer.device_resource,
-                &vertex_buffer_staging.device_resource,
-            );
-            copy_command_list.CopyResource(
-                &index_buffer.device_resource,
-                &index_buffer_staging.device_resource,
-            );
-
-            copy_command_list.CopyTextureRegion(
+            upload.command_list.CopyTextureRegion(
                 &D3D12_TEXTURE_COPY_LOCATION {
                     pResource: Some(tex_resource.device_resource.clone()),
                     Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
@@ -479,7 +422,7 @@ impl Renderer {
                 0,
                 0,
                 &D3D12_TEXTURE_COPY_LOCATION {
-                    pResource: Some(texture_staging.device_resource.clone()),
+                    pResource: Some(upload.sub_resource.resource.device_resource.clone()),
                     Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
                     Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                         PlacedFootprint: layouts[0],
@@ -487,11 +430,8 @@ impl Renderer {
                 },
                 std::ptr::null(),
             );
-            copy_command_list.Close()?;
-        };
-
-        let copy_fence = copy_queue.execute_command_list(&copy_command_list.clone().into())?;
-        graphics_queue.insert_wait_for_queue_fence(&copy_queue, copy_fence)?;
+        }
+        upload.submit(Some(&graphics_queue))?;
 
         let aspect_ratio = (width as f32) / (height as f32);
         let constant_buffer = [
@@ -554,7 +494,6 @@ impl Renderer {
             device,
 
             graphics_queue,
-            copy_queue,
             swap_chain,
             frame_index,
             render_targets,
@@ -575,13 +514,8 @@ impl Renderer {
 
             constant_buffers,
             depth_buffers,
-            copy_command_allocator,
-            copy_command_list,
-            scene_resources_heap,
+            resource_descriptor_heap,
             texture_heap,
-            index_buffer_staging,
-            vertex_buffer_staging,
-            texture_staging,
             texture: tex_resource,
             rtv_indices,
             cbv_indices,
@@ -765,8 +699,7 @@ impl Renderer {
         for fence in resources.fence_values {
             resources.graphics_queue.wait_for_fence_blocking(fence)?;
         }
-        resources.graphics_queue.wait_for_idle()?;
-        resources.copy_queue.wait_for_idle()
+        resources.graphics_queue.wait_for_idle()
     }
 
     pub fn render(&mut self) -> Result<()> {

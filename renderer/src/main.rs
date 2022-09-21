@@ -1,6 +1,6 @@
 use windows::Win32::{Foundation::HWND, Graphics::Dxgi::*};
 use winit::{
-    dpi::PhysicalSize,
+    dpi::{LogicalSize, PhysicalSize},
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     platform::windows::WindowExtWindows,
@@ -12,7 +12,13 @@ use renderer::Renderer;
 
 fn main() {
     let event_loop = EventLoop::new();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
+    let window = WindowBuilder::new()
+        .with_inner_size(LogicalSize {
+            width: 1920,
+            height: 1080,
+        })
+        .build(&event_loop)
+        .unwrap();
 
     let hwnd = HWND(window.hwnd());
 
