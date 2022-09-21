@@ -18,3 +18,6 @@ pub use heap::*;
 
 mod texture;
 pub use texture::*;
+
+mod upload_ring_buffer;
+pub use upload_ring_buffer::*;

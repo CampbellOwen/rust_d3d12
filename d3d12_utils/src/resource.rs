@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use windows::Win32::Graphics::Direct3D12::*;
 
 #[derive(Debug)]
@@ -8,6 +8,39 @@ pub struct Resource {
     pub device_resource: ID3D12Resource,
     pub size: usize,
     pub mapped_data: *mut c_void,
+}
+
+#[derive(Debug)]
+pub struct SubResource<'resource> {
+    resource: &'resource Resource,
+    size: usize,
+    offset: usize,
+}
+
+impl<'resource> SubResource<'resource> {
+    pub fn get_mapped_data(&self) -> Option<*mut c_void> {
+        if self.resource.mapped_data.is_null() {
+            return None;
+        }
+
+        unsafe { Some(self.resource.mapped_data.add(self.offset) as _) }
+    }
+
+    pub fn copy_from<T: Sized>(&self, data: &[T]) -> Result<()> {
+        let data_size_bytes = std::mem::size_of_val(data);
+        ensure!(data_size_bytes <= self.size, "Resource is not big enough");
+
+        let mapped_data = self.get_mapped_data().context("Data not mapped")?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *mut u8,
+                mapped_data as *mut u8,
+                data_size_bytes,
+            );
+        }
+
+        Ok(())
+    }
 }
 
 impl Resource {
@@ -63,6 +96,16 @@ impl Resource {
 
     pub fn gpu_address(&self) -> u64 {
         unsafe { self.device_resource.GetGPUVirtualAddress() }
+    }
+
+    pub fn create_sub_resource(&self, size: usize, offset: usize) -> Result<SubResource> {
+        ensure!((offset + size) <= self.size);
+
+        Ok(SubResource {
+            resource: self,
+            size,
+            offset,
+        })
     }
 }
 
