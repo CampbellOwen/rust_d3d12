@@ -116,7 +116,13 @@ impl UploadRingBuffer {
         };
 
         let buffer = if let Some(heap) = upload_heap {
-            heap.create_resource(device, &buffer_desc, D3D12_RESOURCE_STATE_COMMON, true)?
+            heap.create_resource(
+                device,
+                &buffer_desc,
+                D3D12_RESOURCE_STATE_COMMON,
+                None,
+                true,
+            )?
         } else {
             Resource::create_committed(
                 device,

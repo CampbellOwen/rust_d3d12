@@ -42,6 +42,7 @@ pub(crate) struct RendererResources {
     swap_chain: IDXGISwapChain3,
     frame_index: u32,
     back_buffer_handles: [TextureHandle; FRAME_COUNT],
+    depth_buffer_handles: [TextureHandle; FRAME_COUNT],
     descriptor_manager: DescriptorManager,
     viewport: D3D12_VIEWPORT,
     scissor_rect: RECT,
@@ -54,7 +55,6 @@ pub(crate) struct RendererResources {
     ibv: D3D12_INDEX_BUFFER_VIEW,
 
     cbv_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
-    dsv_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
 
     upload_ring_buffer: UploadRingBuffer,
 
@@ -72,8 +72,6 @@ pub(crate) struct RendererResources {
 
     #[allow(dead_code)]
     constant_buffers: [Resource; FRAME_COUNT as usize],
-    #[allow(dead_code)]
-    depth_buffers: [Tex2D; FRAME_COUNT as usize],
 }
 
 #[derive(Debug)]
@@ -174,6 +172,16 @@ impl Renderer {
                     is_depth_buffer: true,
                     is_unordered_access: false,
                 },
+                Some(D3D12_CLEAR_VALUE {
+                    Format: DXGI_FORMAT_D32_FLOAT,
+                    Anonymous: D3D12_CLEAR_VALUE_0 {
+                        DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
+                            Depth: 1.0,
+                            Stencil: 0,
+                        },
+                    },
+                }),
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
                 &mut descriptor_manager,
             )?;
         }
@@ -193,27 +201,6 @@ impl Renderer {
             right: width as i32,
             bottom: height as i32,
         };
-
-        let mut dsv_descriptors: [DescriptorHandle; FRAME_COUNT as usize] = Default::default();
-        let depth_buffers: [Tex2D; FRAME_COUNT as usize] = array_init::try_array_init(|i| {
-            let buffer = create_depth_stencil_buffer(&device, width as usize, height as usize)?;
-            let dsv_descriptor = descriptor_manager.allocate(DescriptorType::DepthStencilView)?;
-            dsv_descriptors[i] = dsv_descriptor;
-            unsafe {
-                device.CreateDepthStencilView(
-                    &buffer.resource,
-                    &D3D12_DEPTH_STENCIL_VIEW_DESC {
-                        Format: DXGI_FORMAT_D32_FLOAT,
-                        ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
-                        Flags: D3D12_DSV_FLAG_NONE,
-                        ..Default::default()
-                    },
-                    descriptor_manager.get_cpu_handle(&dsv_descriptor)?,
-                );
-            }
-
-            Ok(buffer)
-        })?;
 
         let command_allocators: [ID3D12CommandAllocator; FRAME_COUNT as usize] =
             array_init::try_array_init(|_| -> Result<ID3D12CommandAllocator> {
@@ -291,8 +278,13 @@ impl Renderer {
 
         let mut resource_heap =
             Heap::create_default_heap(&device, 2e7 as usize, "Scene Resources Heap")?;
-        let vertex_buffer =
-            resource_heap.create_resource(&device, &vb_desc, D3D12_RESOURCE_STATE_COMMON, false)?;
+        let vertex_buffer = resource_heap.create_resource(
+            &device,
+            &vb_desc,
+            D3D12_RESOURCE_STATE_COMMON,
+            None,
+            false,
+        )?;
 
         let vbv = D3D12_VERTEX_BUFFER_VIEW {
             BufferLocation: vertex_buffer.gpu_address(),
@@ -325,6 +317,7 @@ impl Renderer {
             &device,
             &index_buffer_desc,
             D3D12_RESOURCE_STATE_COMMON,
+            None,
             false,
         )?;
 
@@ -428,6 +421,7 @@ impl Renderer {
             swap_chain,
             frame_index,
             back_buffer_handles,
+            depth_buffer_handles,
             descriptor_manager,
             viewport,
             scissor_rect,
@@ -442,12 +436,10 @@ impl Renderer {
             fence_values,
 
             constant_buffers,
-            depth_buffers,
             resource_heap,
             texture,
             texture_manager,
             cbv_descriptors,
-            dsv_descriptors,
             upload_ring_buffer,
         };
 
@@ -519,15 +511,16 @@ impl Renderer {
         let rtv_handle = resources.texture_manager.get_rtv(render_target_handle)?;
         let rtv = resources.descriptor_manager.get_cpu_handle(&rtv_handle)?;
 
-        let dsv_handle = resources
-            .descriptor_manager
-            .get_cpu_handle(&resources.dsv_descriptors[resources.frame_index as usize])?;
+        let depth_buffer_handle = &resources.depth_buffer_handles[resources.frame_index as usize];
+        let dsv_handle = resources.texture_manager.get_dsv(depth_buffer_handle)?;
+        let dsv = resources.descriptor_manager.get_cpu_handle(&dsv_handle)?;
+
         unsafe {
-            command_list.OMSetRenderTargets(1, &rtv, false, &dsv_handle);
+            command_list.OMSetRenderTargets(1, &rtv, false, &dsv);
         }
 
         unsafe {
-            command_list.ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, &[]);
+            command_list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, &[]);
             command_list.ClearRenderTargetView(rtv, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
             command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             command_list.IASetVertexBuffers(0, &[resources.vbv]);

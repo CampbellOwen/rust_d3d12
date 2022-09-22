@@ -128,6 +128,8 @@ impl TextureManager {
         &mut self,
         device: &ID3D12Device4,
         texture_info: TextureInfo,
+        clear_value: Option<D3D12_CLEAR_VALUE>,
+        initial_state: D3D12_RESOURCE_STATES,
         descriptor_manager: &mut DescriptorManager,
     ) -> Result<TextureHandle> {
         let (dimension, width, height, depth) = match texture_info.dimension {
@@ -177,7 +179,8 @@ impl TextureManager {
         let texture_resource = self.texture_heap.create_resource(
             device,
             &texture_desc,
-            D3D12_RESOURCE_STATE_COMMON,
+            initial_state,
+            clear_value,
             false,
         )?;
         let texture = Texture {
@@ -238,7 +241,13 @@ impl TextureManager {
         texture_info: TextureInfo,
         data: &[u8],
     ) -> Result<TextureHandle> {
-        let texture_handle = self.create_empty_texture(device, texture_info, descriptor_manager)?;
+        let texture_handle = self.create_empty_texture(
+            device,
+            texture_info,
+            None,
+            D3D12_RESOURCE_STATE_COMMON,
+            descriptor_manager,
+        )?;
         let texture = self.get_texture(&texture_handle)?;
 
         let (dimension, width, height, depth) = match texture_info.dimension {
