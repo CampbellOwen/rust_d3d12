@@ -42,9 +42,7 @@ pub(crate) struct RendererResources {
     swap_chain: IDXGISwapChain3,
     frame_index: u32,
     render_targets: Vec<ID3D12Resource>,
-    rtv_heap: DescriptorHeap,
-    srv_heap: DescriptorHeap,
-    dsv_heap: DescriptorHeap,
+    descriptor_manager: DescriptorManager,
     viewport: D3D12_VIEWPORT,
     scissor_rect: RECT,
     command_allocators: [ID3D12CommandAllocator; FRAME_COUNT as usize],
@@ -55,10 +53,10 @@ pub(crate) struct RendererResources {
     vbv: D3D12_VERTEX_BUFFER_VIEW,
     ibv: D3D12_INDEX_BUFFER_VIEW,
 
-    rtv_indices: [usize; FRAME_COUNT as usize],
-    cbv_indices: [usize; FRAME_COUNT as usize],
-    dsv_indices: [usize; FRAME_COUNT as usize],
-    texture_srv_index: usize,
+    rtv_descriptors: [Descriptor; FRAME_COUNT as usize],
+    cbv_descriptors: [Descriptor; FRAME_COUNT as usize],
+    dsv_descriptors: [Descriptor; FRAME_COUNT as usize],
+    texture_srv_descriptor: Descriptor,
 
     upload_ring_buffer: UploadRingBuffer,
 
@@ -126,15 +124,15 @@ impl Renderer {
 
         let mut upload_ring_buffer = UploadRingBuffer::new(&device, None, None)?;
 
-        let mut rtv_heap = DescriptorHeap::render_target_view_heap(&device, FRAME_COUNT)?;
+        let mut descriptor_manager = DescriptorManager::new(&device)?;
 
-        let rtv_indices: [usize; FRAME_COUNT] = array_init::try_array_init(|_| -> Result<usize> {
-            let (index, _) = rtv_heap.allocate_handle()?;
-            Ok(index)
-        })?;
+        let rtv_descriptors: [Descriptor; FRAME_COUNT] =
+            array_init::try_array_init(|_| -> Result<Descriptor> {
+                descriptor_manager.allocate(DescriptorType::RenderTargetView)
+            })?;
 
         let rtv_handles: [D3D12_CPU_DESCRIPTOR_HANDLE; FRAME_COUNT] =
-            array_init::try_array_init(|i| rtv_heap.get_cpu_handle(i))?;
+            array_init::try_array_init(|i| descriptor_manager.get_cpu_handle(&rtv_descriptors[i]))?;
 
         let (swap_chain, render_targets, viewport, scissor_rect) = create_swapchain_and_views(
             hwnd,
@@ -201,12 +199,11 @@ impl Renderer {
             1,
         )?;
 
-        let mut dsv_heap = DescriptorHeap::depth_stencil_view_heap(&device, 2)?;
-        let mut dsv_indices: [usize; FRAME_COUNT as usize] = Default::default();
+        let mut dsv_descriptors: [Descriptor; FRAME_COUNT as usize] = Default::default();
         let depth_buffers: [Tex2D; FRAME_COUNT as usize] = array_init::try_array_init(|i| {
             let buffer = create_depth_stencil_buffer(&device, width as usize, height as usize)?;
-            let (dsv_index, dsv_handle) = dsv_heap.allocate_handle()?;
-            dsv_indices[i] = dsv_index;
+            let dsv_descriptor = descriptor_manager.allocate(DescriptorType::DepthStencilView)?;
+            dsv_descriptors[i] = dsv_descriptor;
             unsafe {
                 device.CreateDepthStencilView(
                     &buffer.resource,
@@ -216,7 +213,7 @@ impl Renderer {
                         Flags: D3D12_DSV_FLAG_NONE,
                         ..Default::default()
                     },
-                    dsv_handle,
+                    descriptor_manager.get_cpu_handle(&dsv_descriptor)?,
                 );
             }
 
@@ -247,14 +244,10 @@ impl Renderer {
             ..Default::default()
         };
 
-        let mut resource_descriptor_heap =
+        let mut resource_heap =
             Heap::create_default_heap(&device, 2e7 as usize, "Scene Resources Heap")?;
-        let vertex_buffer = resource_descriptor_heap.create_resource(
-            &device,
-            &vb_desc,
-            D3D12_RESOURCE_STATE_COMMON,
-            false,
-        )?;
+        let vertex_buffer =
+            resource_heap.create_resource(&device, &vb_desc, D3D12_RESOURCE_STATE_COMMON, false)?;
 
         let vbv = D3D12_VERTEX_BUFFER_VIEW {
             BufferLocation: vertex_buffer.gpu_address(),
@@ -283,7 +276,7 @@ impl Renderer {
             ..Default::default()
         };
 
-        let index_buffer = resource_descriptor_heap.create_resource(
+        let index_buffer = resource_heap.create_resource(
             &device,
             &index_buffer_desc,
             D3D12_RESOURCE_STATE_COMMON,
@@ -302,8 +295,6 @@ impl Renderer {
             SizeInBytes: std::mem::size_of_val(indices.as_slice()) as u32,
             Format: DXGI_FORMAT_R32_UINT,
         };
-
-        let mut srv_heap = DescriptorHeap::resource_descriptor_heap(&device, FRAME_COUNT * 10)?;
 
         // TEXTURE UPLOAD
 
@@ -387,7 +378,7 @@ impl Renderer {
             false,
         )?;
 
-        let (texture_srv_idx, srv_handle) = srv_heap.allocate_handle()?;
+        let texture_srv_descriptor = descriptor_manager.allocate(DescriptorType::Resource)?;
         unsafe {
             device.CreateShaderResourceView(
                 &tex_resource.device_resource,
@@ -404,7 +395,7 @@ impl Renderer {
                         },
                     },
                 },
-                srv_handle,
+                descriptor_manager.get_cpu_handle(&texture_srv_descriptor)?,
             );
         }
 
@@ -444,7 +435,7 @@ impl Renderer {
             D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
         );
 
-        let mut cbv_indices: [usize; FRAME_COUNT] = Default::default();
+        let mut cbv_descriptors: [Descriptor; FRAME_COUNT] = Default::default();
         let constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
             let buffer = Resource::create_committed(
                 &device,
@@ -471,8 +462,8 @@ impl Renderer {
 
             buffer.copy_from(&constant_buffer)?;
 
-            let (cbv_index, cbv_handle) = srv_heap.allocate_handle()?;
-            cbv_indices[i] = cbv_index;
+            let cbv_descriptor = descriptor_manager.allocate(DescriptorType::Resource)?;
+            cbv_descriptors[i] = cbv_descriptor;
 
             unsafe {
                 device.CreateConstantBufferView(
@@ -480,7 +471,7 @@ impl Renderer {
                         BufferLocation: buffer.gpu_address(),
                         SizeInBytes: buffer.size as u32,
                     },
-                    cbv_handle,
+                    descriptor_manager.get_cpu_handle(&cbv_descriptor)?,
                 )
             };
 
@@ -497,9 +488,7 @@ impl Renderer {
             swap_chain,
             frame_index,
             render_targets,
-            rtv_heap,
-            srv_heap,
-            dsv_heap,
+            descriptor_manager,
             viewport,
             scissor_rect,
             command_allocators,
@@ -514,13 +503,13 @@ impl Renderer {
 
             constant_buffers,
             depth_buffers,
-            resource_descriptor_heap,
+            resource_descriptor_heap: resource_heap,
             texture_heap,
             texture: tex_resource,
-            rtv_indices,
-            cbv_indices,
-            dsv_indices,
-            texture_srv_index: texture_srv_idx,
+            rtv_descriptors,
+            cbv_descriptors,
+            dsv_descriptors,
+            texture_srv_descriptor,
             upload_ring_buffer,
         };
 
@@ -555,17 +544,21 @@ impl Renderer {
         }
 
         let cbv_gpu_handle = resources
-            .srv_heap
-            .get_gpu_handle(resources.cbv_indices[resources.frame_index as usize])?;
+            .descriptor_manager
+            .get_gpu_handle(&resources.cbv_descriptors[resources.frame_index as usize])?;
 
         let texture_gpu_handle = resources
-            .srv_heap
-            .get_gpu_handle(resources.texture_srv_index)?;
+            .descriptor_manager
+            .get_gpu_handle(&resources.texture_srv_descriptor)?;
 
         unsafe {
             command_list.SetGraphicsRootSignature(&resources.root_signature);
 
-            command_list.SetDescriptorHeaps(&[Some(resources.srv_heap.heap.clone())]);
+            command_list.SetDescriptorHeaps(&[Some(
+                resources
+                    .descriptor_manager
+                    .get_heap(DescriptorType::Resource)?,
+            )]);
             command_list.SetGraphicsRootDescriptorTable(0, cbv_gpu_handle);
             command_list.SetGraphicsRootDescriptorTable(1, texture_gpu_handle);
 
@@ -581,12 +574,12 @@ impl Renderer {
         unsafe { command_list.ResourceBarrier(&[barrier]) };
 
         let rtv_handle = resources
-            .rtv_heap
-            .get_cpu_handle(resources.rtv_indices[resources.frame_index as usize])?;
+            .descriptor_manager
+            .get_cpu_handle(&resources.rtv_descriptors[resources.frame_index as usize])?;
 
         let dsv_handle = resources
-            .dsv_heap
-            .get_cpu_handle(resources.dsv_indices[resources.frame_index as usize])?;
+            .descriptor_manager
+            .get_cpu_handle(&resources.dsv_descriptors[resources.frame_index as usize])?;
         unsafe {
             command_list.OMSetRenderTargets(1, &rtv_handle, false, &dsv_handle);
         }
