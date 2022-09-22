@@ -8,11 +8,11 @@
   - [x] Index buffer
   - [x] Constant buffers
 - [x] Depth buffer
-- [ ] Upload Queue
+- [x] Upload Queue
   - [x] Basic usage
-  - [ ] Ring buffer based upload queue
-- [ ] Resources
-  - [ ] Sub-allocate from a resource (for constant buffers)
+  - [x] Ring buffer based upload queue
+- [x] Resources
+  - [x] Sub-allocate from a resource (for constant buffers)
 - [x] Textures
 - [ ] Precompiled shaders
 - [ ] Shader reflection
