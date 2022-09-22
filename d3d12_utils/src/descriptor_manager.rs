@@ -15,10 +15,19 @@ impl Default for DescriptorType {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct DescriptorHandle {
     tag: DescriptorType,
     index: usize,
+}
+
+impl Default for DescriptorHandle {
+    fn default() -> Self {
+        Self {
+            tag: Default::default(),
+            index: usize::MAX,
+        }
+    }
 }
 
 #[derive(Debug)]

@@ -155,7 +155,7 @@ impl Renderer {
                     is_depth_buffer: false,
                     is_unordered_access: false,
                 },
-                resource: back_buffer,
+                resource: Some(back_buffer),
             };
 
             back_buffer_handles[i] =
@@ -201,6 +201,19 @@ impl Renderer {
             right: width as i32,
             bottom: height as i32,
         };
+
+        let new_texture = texture_manager.create_empty_texture(
+            &device,
+            TextureInfo {
+                format: DXGI_FORMAT_R8G8B8A8_UINT,
+                ..Default::default()
+            },
+            None,
+            D3D12_RESOURCE_STATE_COMMON,
+            &mut descriptor_manager,
+        )?;
+
+        texture_manager.delete(new_texture);
 
         let command_allocators: [ID3D12CommandAllocator; FRAME_COUNT as usize] =
             array_init::try_array_init(|_| -> Result<ID3D12CommandAllocator> {
@@ -502,7 +515,7 @@ impl Renderer {
             .get_texture(render_target_handle)?;
 
         let barrier = transition_barrier(
-            &render_target.resource.device_resource,
+            &render_target.get_resource()?.device_resource,
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
         );
@@ -528,7 +541,7 @@ impl Renderer {
             command_list.DrawIndexedInstanced(432138, 1, 0, 0, 0);
 
             command_list.ResourceBarrier(&[transition_barrier(
-                &render_target.resource.device_resource,
+                &render_target.get_resource()?.device_resource,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
             )]);

@@ -299,63 +299,6 @@ pub fn align_data(location: usize, alignment: usize) -> usize {
     (location + (alignment - 1)) & !(alignment - 1)
 }
 
-#[derive(Debug)]
-pub struct Tex2D {
-    pub resource: ID3D12Resource,
-    pub width: usize,
-    pub height: usize,
-}
-
-pub fn create_depth_stencil_buffer(
-    device: &ID3D12Device4,
-    width: usize,
-    height: usize,
-) -> Result<Tex2D> {
-    let mut depth_buffer: Option<ID3D12Resource> = None;
-
-    unsafe {
-        device.CreateCommittedResource(
-            &D3D12_HEAP_PROPERTIES {
-                Type: D3D12_HEAP_TYPE_DEFAULT,
-                ..Default::default()
-            },
-            D3D12_HEAP_FLAG_NONE,
-            &D3D12_RESOURCE_DESC {
-                Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-                Width: width as u64,
-                Height: height as u32,
-                DepthOrArraySize: 1,
-                MipLevels: 1,
-                Format: DXGI_FORMAT_D32_FLOAT,
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Flags: D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
-                ..Default::default()
-            },
-            D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            &D3D12_CLEAR_VALUE {
-                Format: DXGI_FORMAT_D32_FLOAT,
-                Anonymous: D3D12_CLEAR_VALUE_0 {
-                    DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
-                        Depth: 1.0,
-                        Stencil: 0,
-                    },
-                },
-            },
-            &mut depth_buffer,
-        )?
-    };
-    let depth_buffer = depth_buffer.unwrap();
-
-    Ok(Tex2D {
-        resource: depth_buffer,
-        width,
-        height,
-    })
-}
-
 pub fn transition_barrier(
     resource: &ID3D12Resource,
     state_before: D3D12_RESOURCE_STATES,
@@ -433,37 +376,6 @@ pub fn get_swapchain_render_targets<const N: usize>(
             Some(render_target)
         })
         .collect())
-}
-
-pub fn create_swapchain_and_views<const N: usize>(
-    hwnd: HWND,
-    device: &ID3D12Device4,
-    dxgi_factory: &IDXGIFactory5,
-    graphics_queue: &CommandQueue,
-    rtv_handles: &[D3D12_CPU_DESCRIPTOR_HANDLE; N],
-    format: DXGI_FORMAT,
-    extent: (u32, u32),
-) -> Result<(IDXGISwapChain3, Vec<ID3D12Resource>, D3D12_VIEWPORT, RECT)> {
-    let (width, height) = extent;
-    let swap_chain =
-        create_swapchain(hwnd, dxgi_factory, graphics_queue, N as u32, format, extent)?;
-    let render_targets = get_swapchain_render_targets(device, rtv_handles, &swap_chain)?;
-    let viewport = D3D12_VIEWPORT {
-        TopLeftX: 0.0,
-        TopLeftY: 0.0,
-        Width: width as f32,
-        Height: height as f32,
-        MinDepth: D3D12_MIN_DEPTH,
-        MaxDepth: D3D12_MAX_DEPTH,
-    };
-
-    let scissor_rect = RECT {
-        left: 0,
-        top: 0,
-        right: width as i32,
-        bottom: height as i32,
-    };
-    Ok((swap_chain, render_targets, viewport, scissor_rect))
 }
 
 pub fn resize_swapchain<const N: usize>(

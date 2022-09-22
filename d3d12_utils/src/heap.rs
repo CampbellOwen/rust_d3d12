@@ -1,5 +1,4 @@
 use anyhow::{ensure, Result};
-use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::{core::PCWSTR, Win32::Graphics::Direct3D12::*};
 
 use crate::{align_data, Resource};

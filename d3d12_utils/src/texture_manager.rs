@@ -15,6 +15,12 @@ pub enum TextureDimension {
     Three(usize, u32, u16),
 }
 
+impl Default for TextureDimension {
+    fn default() -> Self {
+        Self::One(1)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TextureInfo {
     pub dimension: TextureDimension,
@@ -26,10 +32,30 @@ pub struct TextureInfo {
     pub is_unordered_access: bool,
 }
 
-#[derive(Debug)]
+impl Default for TextureInfo {
+    fn default() -> Self {
+        Self {
+            dimension: Default::default(),
+            format: Default::default(),
+            array_size: 1,
+            num_mips: 1,
+            is_render_target: false,
+            is_depth_buffer: false,
+            is_unordered_access: false,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct Texture {
     pub info: TextureInfo,
-    pub resource: Resource,
+    pub resource: Option<Resource>,
+}
+
+impl Texture {
+    pub fn get_resource(&self) -> Result<&Resource> {
+        self.resource.as_ref().context("Invalid resource")
+    }
 }
 
 #[derive(Debug)]
@@ -70,6 +96,24 @@ impl TextureManager {
             dsv_descriptors: Vec::new(),
             textures: Vec::new(),
         })
+    }
+
+    pub fn delete(&mut self, handle: TextureHandle) {
+        let texture_index = handle.index;
+        self.textures[texture_index] = Texture::default();
+
+        if let Some(rtv_index) = handle.rtv_index {
+            self.rtv_descriptors[rtv_index] = DescriptorHandle::default();
+        }
+        if let Some(srv_index) = handle.srv_index {
+            self.srv_descriptors[srv_index] = DescriptorHandle::default();
+        }
+        if let Some(uav_index) = handle.uav_index {
+            self.uav_descriptors[uav_index] = DescriptorHandle::default();
+        }
+        if let Some(dsv_index) = handle.dsv_index {
+            self.dsv_descriptors[dsv_index] = DescriptorHandle::default();
+        }
     }
 
     pub fn add_texture(
@@ -185,7 +229,7 @@ impl TextureManager {
         )?;
         let texture = Texture {
             info: texture_info,
-            resource: texture_resource,
+            resource: Some(texture_resource),
         };
 
         let rtv_index = if texture_info.is_render_target {
@@ -336,7 +380,7 @@ impl TextureManager {
                 },
             };
             let to = D3D12_TEXTURE_COPY_LOCATION {
-                pResource: Some(texture.resource.device_resource.clone()),
+                pResource: Some(texture.get_resource()?.device_resource.clone()),
                 Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
                 Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                     SubresourceIndex: subresource_index as u32,
@@ -458,7 +502,7 @@ impl TextureManager {
 
         unsafe {
             device.CreateUnorderedAccessView(
-                &texture.resource.device_resource,
+                &texture.get_resource()?.device_resource,
                 None,
                 &D3D12_UNORDERED_ACCESS_VIEW_DESC {
                     Format: texture.info.format,
@@ -528,7 +572,7 @@ impl TextureManager {
 
         unsafe {
             device.CreateDepthStencilView(
-                &texture.resource.device_resource,
+                &texture.get_resource()?.device_resource,
                 &D3D12_DEPTH_STENCIL_VIEW_DESC {
                     Format: texture.info.format,
                     ViewDimension: view_dimension,
@@ -611,7 +655,7 @@ impl TextureManager {
 
         unsafe {
             device.CreateRenderTargetView(
-                &texture.resource.device_resource,
+                &texture.get_resource()?.device_resource,
                 &D3D12_RENDER_TARGET_VIEW_DESC {
                     Format: texture.info.format,
                     ViewDimension: view_dimension,
@@ -702,7 +746,7 @@ impl TextureManager {
 
         unsafe {
             device.CreateShaderResourceView(
-                &texture.resource.device_resource,
+                &texture.get_resource()?.device_resource,
                 &D3D12_SHADER_RESOURCE_VIEW_DESC {
                     Format: texture.info.format,
                     ViewDimension: view_dimension,
