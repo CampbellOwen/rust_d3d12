@@ -56,21 +56,20 @@ pub(crate) struct RendererResources {
     rtv_descriptors: [Descriptor; FRAME_COUNT as usize],
     cbv_descriptors: [Descriptor; FRAME_COUNT as usize],
     dsv_descriptors: [Descriptor; FRAME_COUNT as usize],
-    texture_srv_descriptor: Descriptor,
 
     upload_ring_buffer: UploadRingBuffer,
 
+    texture_manager: TextureManager,
+
     #[allow(dead_code)]
     resource_heap: Heap,
-    #[allow(dead_code)]
-    texture_heap: Heap,
     #[allow(dead_code)]
     vertex_buffer: Resource,
     #[allow(dead_code)]
     index_buffer: Resource,
 
     #[allow(dead_code)]
-    texture: Resource,
+    texture: TextureHandle,
 
     #[allow(dead_code)]
     constant_buffers: [Resource; FRAME_COUNT as usize],
@@ -298,131 +297,21 @@ impl Renderer {
 
         // TEXTURE UPLOAD
 
-        let mut texture_heap = Heap::create_default_heap(&device, 1e8 as usize, "Texture Heap")?;
-
         let img = ImageReader::open(r"F:\Textures\uv_checker.png")?
             .decode()?
             .to_rgba8();
 
-        let texture_desc = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-            Width: img.width() as u64,
-            Height: img.height(),
-            DepthOrArraySize: 1,
-            MipLevels: 1,
-            Format: DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-            ..Default::default()
-        };
-
-        const MAX_NUM_SUBRESOURCES: usize = 10;
-
-        let mut layouts: [D3D12_PLACED_SUBRESOURCE_FOOTPRINT; MAX_NUM_SUBRESOURCES] =
-            Default::default();
-        let mut num_rows: [u32; MAX_NUM_SUBRESOURCES] = Default::default();
-        let mut row_size_bytes = 0;
-        let mut total_bytes = 0;
-
-        let num_subresources = 1;
-
-        unsafe {
-            device.GetCopyableFootprints(
-                &texture_desc,
-                0,
-                1,
-                0,
-                layouts.as_mut_ptr(),
-                num_rows.as_mut_ptr(),
-                &mut row_size_bytes,
-                &mut total_bytes,
-            );
-        }
-
-        // Copy Texture to Upload buffer
-
-        let upload = upload_ring_buffer.allocate(total_bytes as usize)?;
-
-        // Only 1 subresource for now
-        let subresource_index = 0;
-        let subresource_layout = &layouts[subresource_index];
-        let subresource_height = num_rows[subresource_index];
-        //let subresource_depth = subresource_layout.Footprint.Depth;
-        let subresource_pitch = align_data(
-            subresource_layout.Footprint.RowPitch as usize,
-            D3D12_TEXTURE_DATA_PITCH_ALIGNMENT as usize,
-        );
-
-        let mut resource_offset = subresource_layout.Offset;
-        let mut img_offset = 0;
-        let row_size_bytes = img.width() as usize * std::mem::size_of::<u32>();
-        let img_samples = img.as_flat_samples().samples;
-        // Copy row by row to account for row pitch
-        for _ in 0..subresource_height {
-            upload.sub_resource.copy_to_offset_from(
-                resource_offset as usize,
-                &img_samples[img_offset..(img_offset + row_size_bytes)],
-            )?;
-
-            resource_offset += subresource_pitch as u64;
-            img_offset += row_size_bytes;
-        }
-
-        let texture = texture_heap.create_resource(
+        let mut texture_manager = TextureManager::new(&device, None)?;
+        let texture = texture_manager.create_texture(
             &device,
-            &texture_desc,
-            D3D12_RESOURCE_STATE_COMMON,
-            false,
+            &mut upload_ring_buffer,
+            Some(&graphics_queue),
+            TextureDimension::Two(img.width() as usize, img.height()),
+            DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+            1,
+            1,
+            img.as_flat_samples().samples,
         )?;
-
-        let texture_srv_descriptor = descriptor_manager.allocate(DescriptorType::Resource)?;
-        unsafe {
-            device.CreateShaderResourceView(
-                &texture.device_resource,
-                &D3D12_SHADER_RESOURCE_VIEW_DESC {
-                    Format: texture_desc.Format,
-                    ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
-                    Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                        Texture2D: D3D12_TEX2D_SRV {
-                            MostDetailedMip: 0,
-                            MipLevels: 1,
-                            PlaneSlice: 0,
-                            ResourceMinLODClamp: 0.0f32,
-                        },
-                    },
-                },
-                descriptor_manager.get_cpu_handle(&texture_srv_descriptor)?,
-            );
-        }
-
-        layouts[0].Offset += upload.sub_resource.offset as u64;
-        unsafe {
-            upload.command_list.CopyTextureRegion(
-                &D3D12_TEXTURE_COPY_LOCATION {
-                    pResource: Some(texture.device_resource.clone()),
-                    Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                        SubresourceIndex: subresource_index as u32,
-                    },
-                },
-                0,
-                0,
-                0,
-                &D3D12_TEXTURE_COPY_LOCATION {
-                    pResource: Some(upload.sub_resource.resource.device_resource.clone()),
-                    Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                        PlacedFootprint: layouts[0],
-                    },
-                },
-                std::ptr::null(),
-            );
-        }
-        upload.submit(Some(&graphics_queue))?;
 
         let aspect_ratio = (width as f32) / (height as f32);
         let constant_buffer = [
@@ -504,12 +393,11 @@ impl Renderer {
             constant_buffers,
             depth_buffers,
             resource_heap,
-            texture_heap,
             texture,
+            texture_manager,
             rtv_descriptors,
             cbv_descriptors,
             dsv_descriptors,
-            texture_srv_descriptor,
             upload_ring_buffer,
         };
 
@@ -527,9 +415,9 @@ impl Renderer {
         Ok(renderer)
     }
 
-    fn populate_command_list(&self) -> Result<()> {
+    fn populate_command_list(&mut self) -> Result<()> {
         ensure!(self.resources.is_some());
-        let resources = self.resources.as_ref().unwrap();
+        let resources = self.resources.as_mut().unwrap();
 
         // Resetting the command allocator while the frame is being rendered is not okay
         let command_allocator = &resources.command_allocators[resources.frame_index as usize];
@@ -547,9 +435,13 @@ impl Renderer {
             .descriptor_manager
             .get_gpu_handle(&resources.cbv_descriptors[resources.frame_index as usize])?;
 
-        let texture_gpu_handle = resources
-            .descriptor_manager
-            .get_gpu_handle(&resources.texture_srv_descriptor)?;
+        let texture_srv = resources.texture_manager.get_srv(
+            &resources.device,
+            &mut resources.descriptor_manager,
+            &mut resources.texture,
+        )?;
+
+        let texture_gpu_handle = resources.descriptor_manager.get_gpu_handle(&texture_srv)?;
 
         unsafe {
             command_list.SetGraphicsRootSignature(&resources.root_signature);
