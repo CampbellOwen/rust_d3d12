@@ -306,10 +306,12 @@ impl Renderer {
             &device,
             &mut upload_ring_buffer,
             Some(&graphics_queue),
-            TextureDimension::Two(img.width() as usize, img.height()),
-            DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-            1,
-            1,
+            TextureInfo {
+                dimension: TextureDimension::Two(img.width() as usize, img.height()),
+                format: DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+                array_size: 1,
+                num_mips: 1,
+            },
             img.as_flat_samples().samples,
         )?;
 

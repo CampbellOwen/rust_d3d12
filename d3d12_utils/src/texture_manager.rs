@@ -13,12 +13,18 @@ pub enum TextureDimension {
     Two(usize, u32),
     Three(usize, u32, u16),
 }
-#[derive(Debug)]
-pub struct Texture {
-    pub texture_type: TextureDimension,
+
+#[derive(Debug, Clone, Copy)]
+pub struct TextureInfo {
+    pub dimension: TextureDimension,
     pub format: DXGI_FORMAT,
     pub array_size: u16,
     pub num_mips: u16,
+}
+
+#[derive(Debug)]
+pub struct Texture {
+    pub info: TextureInfo,
     pub resource: Resource,
 }
 
@@ -64,26 +70,23 @@ impl TextureManager {
         device: &ID3D12Device4,
         uploader: &mut UploadRingBuffer,
         dependent_queue: Option<&CommandQueue>,
-        texture_type: TextureDimension,
-        format: DXGI_FORMAT,
-        array_size: u16,
-        num_mips: u16,
+        texture_info: TextureInfo,
         data: &[u8],
     ) -> Result<TextureHandle> {
-        let (dimension, width, height, depth) = match texture_type {
+        let (dimension, width, height, depth) = match texture_info.dimension {
             TextureDimension::One(width) => (D3D12_RESOURCE_DIMENSION_TEXTURE1D, width, 1, 1),
             TextureDimension::Two(width, height) => (
                 D3D12_RESOURCE_DIMENSION_TEXTURE2D,
                 width,
                 height,
-                array_size,
+                texture_info.array_size,
             ),
             TextureDimension::Three(width, height, depth) => {
                 (D3D12_RESOURCE_DIMENSION_TEXTURE3D, width, height, depth)
             }
         };
 
-        let num_subresources = depth * num_mips;
+        let num_subresources = depth * texture_info.num_mips;
 
         ensure!(num_subresources as usize <= MAX_NUM_SUBRESOURCES);
 
@@ -92,8 +95,8 @@ impl TextureManager {
             Width: width as u64,
             Height: height as u32,
             DepthOrArraySize: depth as u16,
-            MipLevels: num_mips as u16,
-            Format: format,
+            MipLevels: texture_info.num_mips as u16,
+            Format: texture_info.format,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -131,9 +134,9 @@ impl TextureManager {
         let upload_context = uploader.allocate(total_bytes as usize)?;
 
         let mut data_offset = 0;
-        for array_index in 0..array_size {
-            for mip_index in 0..num_mips {
-                let layout_index = (mip_index + (array_index * num_mips)) as usize;
+        for array_index in 0..texture_info.array_size {
+            for mip_index in 0..texture_info.num_mips {
+                let layout_index = (mip_index + (array_index * texture_info.num_mips)) as usize;
                 let layout = &layouts[layout_index];
                 let row_bytes = row_size_bytes[layout_index];
                 let mut resource_offset = layout.Offset;
@@ -187,10 +190,7 @@ impl TextureManager {
         upload_context.submit(dependent_queue)?;
 
         let texture = Texture {
-            texture_type,
-            format,
-            num_mips,
-            array_size,
+            info: texture_info,
             resource: texture_resource,
         };
 
@@ -249,17 +249,17 @@ impl TextureManager {
         let descriptor = descriptor_manager.allocate(DescriptorType::Resource)?;
 
         let texture = &self.textures[handle.index];
-        let (view_dimension, anonymous_member) = match texture.texture_type {
+        let (view_dimension, anonymous_member) = match texture.info.dimension {
             TextureDimension::One(_) => {
-                if texture.array_size > 1 {
+                if texture.info.array_size > 1 {
                     (
                         D3D12_SRV_DIMENSION_TEXTURE1DARRAY,
                         D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                             Texture1DArray: D3D12_TEX1D_ARRAY_SRV {
                                 MostDetailedMip: 0,
-                                MipLevels: texture.num_mips as u32,
+                                MipLevels: texture.info.num_mips as u32,
                                 FirstArraySlice: 0,
-                                ArraySize: texture.array_size as u32,
+                                ArraySize: texture.info.array_size as u32,
                                 ResourceMinLODClamp: 0.0,
                             },
                         },
@@ -270,7 +270,7 @@ impl TextureManager {
                         D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                             Texture1D: D3D12_TEX1D_SRV {
                                 MostDetailedMip: 0,
-                                MipLevels: texture.num_mips as u32,
+                                MipLevels: texture.info.num_mips as u32,
                                 ResourceMinLODClamp: 0.0,
                             },
                         },
@@ -278,15 +278,15 @@ impl TextureManager {
                 }
             }
             TextureDimension::Two(_, _) => {
-                if texture.array_size > 1 {
+                if texture.info.array_size > 1 {
                     (
                         D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
                         D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                             Texture2DArray: D3D12_TEX2D_ARRAY_SRV {
                                 MostDetailedMip: 0,
-                                MipLevels: texture.num_mips as u32,
+                                MipLevels: texture.info.num_mips as u32,
                                 FirstArraySlice: 0,
-                                ArraySize: texture.array_size as u32,
+                                ArraySize: texture.info.array_size as u32,
                                 PlaneSlice: 0,
                                 ResourceMinLODClamp: 0.0,
                             },
@@ -298,7 +298,7 @@ impl TextureManager {
                         D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                             Texture2D: D3D12_TEX2D_SRV {
                                 MostDetailedMip: 0,
-                                MipLevels: texture.num_mips as u32,
+                                MipLevels: texture.info.num_mips as u32,
                                 PlaneSlice: 0,
                                 ResourceMinLODClamp: 0.0,
                             },
@@ -311,7 +311,7 @@ impl TextureManager {
                 D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                     Texture3D: D3D12_TEX3D_SRV {
                         MostDetailedMip: 0,
-                        MipLevels: texture.num_mips as u32,
+                        MipLevels: texture.info.num_mips as u32,
                         ResourceMinLODClamp: 0.0,
                     },
                 },
@@ -322,7 +322,7 @@ impl TextureManager {
             device.CreateShaderResourceView(
                 &texture.resource.device_resource,
                 &D3D12_SHADER_RESOURCE_VIEW_DESC {
-                    Format: texture.format,
+                    Format: texture.info.format,
                     ViewDimension: view_dimension,
                     Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
                     Anonymous: anonymous_member,
