@@ -45,7 +45,7 @@ fn main() {
                                 debug_interface
                                     .ReportLiveObjects(
                                         DXGI_DEBUG_ALL,
-                                        DXGI_DEBUG_RLO_SUMMARY | DXGI_DEBUG_RLO_IGNORE_INTERNAL,
+                                        DXGI_DEBUG_RLO_DETAIL | DXGI_DEBUG_RLO_IGNORE_INTERNAL,
                                     )
                                     .expect("Report live objects")
                             };

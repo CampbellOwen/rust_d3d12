@@ -61,7 +61,7 @@ pub(crate) struct RendererResources {
     upload_ring_buffer: UploadRingBuffer,
 
     #[allow(dead_code)]
-    resource_descriptor_heap: Heap,
+    resource_heap: Heap,
     #[allow(dead_code)]
     texture_heap: Heap,
     #[allow(dead_code)]
@@ -371,7 +371,7 @@ impl Renderer {
             img_offset += row_size_bytes;
         }
 
-        let tex_resource = texture_heap.create_resource(
+        let texture = texture_heap.create_resource(
             &device,
             &texture_desc,
             D3D12_RESOURCE_STATE_COMMON,
@@ -381,7 +381,7 @@ impl Renderer {
         let texture_srv_descriptor = descriptor_manager.allocate(DescriptorType::Resource)?;
         unsafe {
             device.CreateShaderResourceView(
-                &tex_resource.device_resource,
+                &texture.device_resource,
                 &D3D12_SHADER_RESOURCE_VIEW_DESC {
                     Format: texture_desc.Format,
                     ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
@@ -403,7 +403,7 @@ impl Renderer {
         unsafe {
             upload.command_list.CopyTextureRegion(
                 &D3D12_TEXTURE_COPY_LOCATION {
-                    pResource: Some(tex_resource.device_resource.clone()),
+                    pResource: Some(texture.device_resource.clone()),
                     Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
                     Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                         SubresourceIndex: subresource_index as u32,
@@ -503,9 +503,9 @@ impl Renderer {
 
             constant_buffers,
             depth_buffers,
-            resource_descriptor_heap: resource_heap,
+            resource_heap,
             texture_heap,
-            texture: tex_resource,
+            texture,
             rtv_descriptors,
             cbv_descriptors,
             dsv_descriptors,

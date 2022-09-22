@@ -4,13 +4,6 @@ use anyhow::{ensure, Context, Result};
 use windows::Win32::Graphics::Direct3D12::*;
 
 #[derive(Debug)]
-pub struct Resource {
-    pub device_resource: ID3D12Resource,
-    pub size: usize,
-    pub mapped_data: *mut c_void,
-}
-
-#[derive(Debug)]
 pub struct SubResource<'resource> {
     pub resource: &'resource Resource,
     pub size: usize,
@@ -81,6 +74,13 @@ impl<'resource> SubResource<'resource> {
 
         Ok(())
     }
+}
+
+#[derive(Debug)]
+pub struct Resource {
+    pub device_resource: ID3D12Resource,
+    pub size: usize,
+    pub mapped_data: *mut c_void,
 }
 
 impl Resource {
