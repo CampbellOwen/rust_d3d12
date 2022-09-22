@@ -41,7 +41,7 @@ pub(crate) struct RendererResources {
 
     swap_chain: IDXGISwapChain3,
     frame_index: u32,
-    render_targets: Vec<ID3D12Resource>,
+    back_buffer_handles: [TextureHandle; FRAME_COUNT],
     descriptor_manager: DescriptorManager,
     viewport: D3D12_VIEWPORT,
     scissor_rect: RECT,
@@ -53,9 +53,8 @@ pub(crate) struct RendererResources {
     vbv: D3D12_VERTEX_BUFFER_VIEW,
     ibv: D3D12_INDEX_BUFFER_VIEW,
 
-    rtv_descriptors: [Descriptor; FRAME_COUNT as usize],
-    cbv_descriptors: [Descriptor; FRAME_COUNT as usize],
-    dsv_descriptors: [Descriptor; FRAME_COUNT as usize],
+    cbv_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
+    dsv_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
 
     upload_ring_buffer: UploadRingBuffer,
 
@@ -122,31 +121,99 @@ impl Renderer {
         let graphics_queue = CommandQueue::new(&device, D3D12_COMMAND_LIST_TYPE_DIRECT)?;
 
         let mut upload_ring_buffer = UploadRingBuffer::new(&device, None, None)?;
-
+        let mut texture_manager = TextureManager::new(&device, None)?;
         let mut descriptor_manager = DescriptorManager::new(&device)?;
 
-        let rtv_descriptors: [Descriptor; FRAME_COUNT] =
-            array_init::try_array_init(|_| -> Result<Descriptor> {
-                descriptor_manager.allocate(DescriptorType::RenderTargetView)
-            })?;
-
-        let rtv_handles: [D3D12_CPU_DESCRIPTOR_HANDLE; FRAME_COUNT] =
-            array_init::try_array_init(|i| descriptor_manager.get_cpu_handle(&rtv_descriptors[i]))?;
-
-        let (swap_chain, render_targets, viewport, scissor_rect) = create_swapchain_and_views(
+        let swap_chain_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        let swap_chain = create_swapchain(
             hwnd,
-            &device,
             &dxgi_factory,
             &graphics_queue,
-            &rtv_handles,
+            FRAME_COUNT as u32,
+            swap_chain_format,
             (width, height),
         )?;
-
         let frame_index = unsafe { swap_chain.GetCurrentBackBufferIndex() };
-
         unsafe {
             dxgi_factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER)?;
         }
+
+        let mut back_buffer_handles: [TextureHandle; FRAME_COUNT] = Default::default();
+        let mut depth_buffer_handles: [TextureHandle; FRAME_COUNT] = Default::default();
+        for i in 0..FRAME_COUNT {
+            let back_buffer: ID3D12Resource = unsafe { swap_chain.GetBuffer(i as u32) }?;
+            let back_buffer = Resource {
+                device_resource: back_buffer,
+                size: (width * height * 4) as usize,
+                mapped_data: std::ptr::null_mut(),
+            };
+            let back_buffer = Texture {
+                info: TextureInfo {
+                    dimension: TextureDimension::Two(width as usize, height),
+                    format: swap_chain_format,
+                    array_size: 1,
+                    num_mips: 1,
+                    is_render_target: true,
+                    is_depth_buffer: false,
+                    is_unordered_access: false,
+                },
+                resource: back_buffer,
+            };
+
+            back_buffer_handles[i] =
+                texture_manager.add_texture(&device, &mut descriptor_manager, back_buffer)?;
+
+            depth_buffer_handles[i] = texture_manager.create_empty_texture(
+                &device,
+                TextureInfo {
+                    dimension: TextureDimension::Two(width as usize, height),
+                    format: DXGI_FORMAT_D32_FLOAT,
+                    array_size: 1,
+                    num_mips: 1,
+                    is_render_target: false,
+                    is_depth_buffer: true,
+                    is_unordered_access: false,
+                },
+                &mut descriptor_manager,
+            )?;
+        }
+
+        let viewport = D3D12_VIEWPORT {
+            TopLeftX: 0.0,
+            TopLeftY: 0.0,
+            Width: width as f32,
+            Height: height as f32,
+            MinDepth: D3D12_MIN_DEPTH,
+            MaxDepth: D3D12_MAX_DEPTH,
+        };
+
+        let scissor_rect = RECT {
+            left: 0,
+            top: 0,
+            right: width as i32,
+            bottom: height as i32,
+        };
+
+        let mut dsv_descriptors: [DescriptorHandle; FRAME_COUNT as usize] = Default::default();
+        let depth_buffers: [Tex2D; FRAME_COUNT as usize] = array_init::try_array_init(|i| {
+            let buffer = create_depth_stencil_buffer(&device, width as usize, height as usize)?;
+            let dsv_descriptor = descriptor_manager.allocate(DescriptorType::DepthStencilView)?;
+            dsv_descriptors[i] = dsv_descriptor;
+            unsafe {
+                device.CreateDepthStencilView(
+                    &buffer.resource,
+                    &D3D12_DEPTH_STENCIL_VIEW_DESC {
+                        Format: DXGI_FORMAT_D32_FLOAT,
+                        ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
+                        Flags: D3D12_DSV_FLAG_NONE,
+                        ..Default::default()
+                    },
+                    descriptor_manager.get_cpu_handle(&dsv_descriptor)?,
+                );
+            }
+
+            Ok(buffer)
+        })?;
 
         let command_allocators: [ID3D12CommandAllocator; FRAME_COUNT as usize] =
             array_init::try_array_init(|_| -> Result<ID3D12CommandAllocator> {
@@ -197,27 +264,6 @@ impl Renderer {
             &pixel_shader,
             1,
         )?;
-
-        let mut dsv_descriptors: [Descriptor; FRAME_COUNT as usize] = Default::default();
-        let depth_buffers: [Tex2D; FRAME_COUNT as usize] = array_init::try_array_init(|i| {
-            let buffer = create_depth_stencil_buffer(&device, width as usize, height as usize)?;
-            let dsv_descriptor = descriptor_manager.allocate(DescriptorType::DepthStencilView)?;
-            dsv_descriptors[i] = dsv_descriptor;
-            unsafe {
-                device.CreateDepthStencilView(
-                    &buffer.resource,
-                    &D3D12_DEPTH_STENCIL_VIEW_DESC {
-                        Format: DXGI_FORMAT_D32_FLOAT,
-                        ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
-                        Flags: D3D12_DSV_FLAG_NONE,
-                        ..Default::default()
-                    },
-                    descriptor_manager.get_cpu_handle(&dsv_descriptor)?,
-                );
-            }
-
-            Ok(buffer)
-        })?;
 
         let command_list: ID3D12GraphicsCommandList = unsafe {
             device.CreateCommandList1(
@@ -301,16 +347,19 @@ impl Renderer {
             .decode()?
             .to_rgba8();
 
-        let mut texture_manager = TextureManager::new(&device, None)?;
         let texture = texture_manager.create_texture(
             &device,
             &mut upload_ring_buffer,
             Some(&graphics_queue),
+            &mut descriptor_manager,
             TextureInfo {
                 dimension: TextureDimension::Two(img.width() as usize, img.height()),
                 format: DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
                 array_size: 1,
                 num_mips: 1,
+                is_depth_buffer: false,
+                is_unordered_access: false,
+                is_render_target: false,
             },
             img.as_flat_samples().samples,
         )?;
@@ -326,7 +375,7 @@ impl Renderer {
             D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
         );
 
-        let mut cbv_descriptors: [Descriptor; FRAME_COUNT] = Default::default();
+        let mut cbv_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
         let constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
             let buffer = Resource::create_committed(
                 &device,
@@ -378,7 +427,7 @@ impl Renderer {
             graphics_queue,
             swap_chain,
             frame_index,
-            render_targets,
+            back_buffer_handles,
             descriptor_manager,
             viewport,
             scissor_rect,
@@ -397,7 +446,6 @@ impl Renderer {
             resource_heap,
             texture,
             texture_manager,
-            rtv_descriptors,
             cbv_descriptors,
             dsv_descriptors,
             upload_ring_buffer,
@@ -437,11 +485,7 @@ impl Renderer {
             .descriptor_manager
             .get_gpu_handle(&resources.cbv_descriptors[resources.frame_index as usize])?;
 
-        let texture_srv = resources.texture_manager.get_srv(
-            &resources.device,
-            &mut resources.descriptor_manager,
-            &mut resources.texture,
-        )?;
+        let texture_srv = resources.texture_manager.get_srv(&resources.texture)?;
 
         let texture_gpu_handle = resources.descriptor_manager.get_gpu_handle(&texture_srv)?;
 
@@ -460,34 +504,38 @@ impl Renderer {
             command_list.RSSetScissorRects(&[resources.scissor_rect]);
         }
 
+        let render_target_handle = &resources.back_buffer_handles[resources.frame_index as usize];
+        let render_target = resources
+            .texture_manager
+            .get_texture(render_target_handle)?;
+
         let barrier = transition_barrier(
-            &resources.render_targets[resources.frame_index as usize],
+            &render_target.resource.device_resource,
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
         );
         unsafe { command_list.ResourceBarrier(&[barrier]) };
 
-        let rtv_handle = resources
-            .descriptor_manager
-            .get_cpu_handle(&resources.rtv_descriptors[resources.frame_index as usize])?;
+        let rtv_handle = resources.texture_manager.get_rtv(render_target_handle)?;
+        let rtv = resources.descriptor_manager.get_cpu_handle(&rtv_handle)?;
 
         let dsv_handle = resources
             .descriptor_manager
             .get_cpu_handle(&resources.dsv_descriptors[resources.frame_index as usize])?;
         unsafe {
-            command_list.OMSetRenderTargets(1, &rtv_handle, false, &dsv_handle);
+            command_list.OMSetRenderTargets(1, &rtv, false, &dsv_handle);
         }
 
         unsafe {
             command_list.ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, &[]);
-            command_list.ClearRenderTargetView(rtv_handle, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
+            command_list.ClearRenderTargetView(rtv, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
             command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             command_list.IASetVertexBuffers(0, &[resources.vbv]);
             command_list.IASetIndexBuffer(&resources.ibv);
             command_list.DrawIndexedInstanced(432138, 1, 0, 0, 0);
 
             command_list.ResourceBarrier(&[transition_barrier(
-                &resources.render_targets[resources.frame_index as usize],
+                &render_target.resource.device_resource,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
             )]);

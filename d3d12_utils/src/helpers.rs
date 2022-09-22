@@ -380,6 +380,7 @@ pub fn create_swapchain(
     dxgi_factory: &IDXGIFactory5,
     graphics_queue: &CommandQueue,
     buffer_count: u32,
+    format: DXGI_FORMAT,
     extent: (u32, u32),
 ) -> Result<IDXGISwapChain3> {
     let (width, height) = extent;
@@ -388,7 +389,7 @@ pub fn create_swapchain(
         BufferCount: buffer_count,
         Width: width,
         Height: height,
-        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        Format: format,
         BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
         SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
         SampleDesc: DXGI_SAMPLE_DESC {
@@ -440,10 +441,12 @@ pub fn create_swapchain_and_views<const N: usize>(
     dxgi_factory: &IDXGIFactory5,
     graphics_queue: &CommandQueue,
     rtv_handles: &[D3D12_CPU_DESCRIPTOR_HANDLE; N],
+    format: DXGI_FORMAT,
     extent: (u32, u32),
 ) -> Result<(IDXGISwapChain3, Vec<ID3D12Resource>, D3D12_VIEWPORT, RECT)> {
     let (width, height) = extent;
-    let swap_chain = create_swapchain(hwnd, dxgi_factory, graphics_queue, N as u32, extent)?;
+    let swap_chain =
+        create_swapchain(hwnd, dxgi_factory, graphics_queue, N as u32, format, extent)?;
     let render_targets = get_swapchain_render_targets(device, rtv_handles, &swap_chain)?;
     let viewport = D3D12_VIEWPORT {
         TopLeftX: 0.0,

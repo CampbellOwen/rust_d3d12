@@ -16,7 +16,7 @@ impl Default for DescriptorType {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Descriptor {
+pub struct DescriptorHandle {
     tag: DescriptorType,
     index: usize,
 }
@@ -54,7 +54,7 @@ impl DescriptorManager {
         })
     }
 
-    pub fn allocate(&mut self, descriptor_type: DescriptorType) -> Result<Descriptor> {
+    pub fn allocate(&mut self, descriptor_type: DescriptorType) -> Result<DescriptorHandle> {
         ensure!(descriptor_type != DescriptorType::Unset);
         let index = match descriptor_type {
             DescriptorType::Unset => None.context("Invalid descriptor type"),
@@ -70,13 +70,13 @@ impl DescriptorManager {
             }
         }?;
 
-        Ok(Descriptor {
+        Ok(DescriptorHandle {
             tag: descriptor_type,
             index,
         })
     }
 
-    pub fn free(&mut self, descriptor: Descriptor) {
+    pub fn free(&mut self, descriptor: DescriptorHandle) {
         match descriptor.tag {
             DescriptorType::Unset => (),
             DescriptorType::Resource => self.resource_free_list.push(descriptor.index),
@@ -85,7 +85,10 @@ impl DescriptorManager {
         };
     }
 
-    pub fn get_cpu_handle(&self, descriptor: &Descriptor) -> Result<D3D12_CPU_DESCRIPTOR_HANDLE> {
+    pub fn get_cpu_handle(
+        &self,
+        descriptor: &DescriptorHandle,
+    ) -> Result<D3D12_CPU_DESCRIPTOR_HANDLE> {
         match descriptor.tag {
             DescriptorType::Unset => None.context("Invalid descriptor type"),
             DescriptorType::Resource => self
@@ -100,7 +103,10 @@ impl DescriptorManager {
         }
     }
 
-    pub fn get_gpu_handle(&self, descriptor: &Descriptor) -> Result<D3D12_GPU_DESCRIPTOR_HANDLE> {
+    pub fn get_gpu_handle(
+        &self,
+        descriptor: &DescriptorHandle,
+    ) -> Result<D3D12_GPU_DESCRIPTOR_HANDLE> {
         match descriptor.tag {
             DescriptorType::Unset => None.context("Invalid descriptor type"),
             DescriptorType::Resource => self
