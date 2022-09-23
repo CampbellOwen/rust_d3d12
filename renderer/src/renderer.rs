@@ -35,6 +35,12 @@ struct MaterialConstantBuffer {
     pub texture_index: u32,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct ModelConstantBuffer {
+    pub M: glam::Mat4,
+}
+
 #[derive(Debug)]
 pub(crate) struct RendererResources {
     #[allow(dead_code)]
@@ -60,8 +66,6 @@ pub(crate) struct RendererResources {
     vbv: D3D12_VERTEX_BUFFER_VIEW,
     ibv: D3D12_INDEX_BUFFER_VIEW,
 
-    cbv_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
-
     upload_ring_buffer: UploadRingBuffer,
 
     texture_manager: TextureManager,
@@ -77,11 +81,14 @@ pub(crate) struct RendererResources {
     texture: TextureHandle,
 
     #[allow(dead_code)]
-    constant_buffers: [Resource; FRAME_COUNT as usize],
+    camera_constant_buffers: [Resource; FRAME_COUNT as usize],
+    camera_cbv_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
     #[allow(dead_code)]
     material_constant_buffers: [Resource; FRAME_COUNT as usize],
-    #[allow(dead_code)]
     material_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
+    #[allow(dead_code)]
+    model_constant_buffers: [Resource; FRAME_COUNT as usize],
+    model_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
 }
 
 #[derive(Debug)]
@@ -381,18 +388,18 @@ impl Renderer {
         )?;
 
         let aspect_ratio = (width as f32) / (height as f32);
-        let constant_buffer = [
-            glam::Mat4::from_translation(Vec3::new(0.0, -0.8, 1.5))
-                * glam::Mat4::from_rotation_y(PI),
+        let camera_cb = [
+            glam::Mat4::from_translation(Vec3::new(0.0, -0.8, 1.5)).inverse(),
+            //* glam::Mat4::from_rotation_y(PI),
             glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
         ];
-        let constant_buffer_size = align_data(
-            std::mem::size_of_val(&constant_buffer),
+        let camera_buffer_size = align_data(
+            std::mem::size_of_val(&camera_cb),
             D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
         );
 
-        let mut cbv_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
-        let model_constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
+        let mut camera_cbv_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
+        let camera_constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
             let buffer = Resource::create_committed(
                 &device,
                 &D3D12_HEAP_PROPERTIES {
@@ -401,7 +408,7 @@ impl Renderer {
                 },
                 &D3D12_RESOURCE_DESC {
                     Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                    Width: constant_buffer_size as u64,
+                    Width: camera_buffer_size as u64,
                     Height: 1,
                     DepthOrArraySize: 1,
                     MipLevels: 1,
@@ -417,10 +424,10 @@ impl Renderer {
                 true,
             )?;
 
-            buffer.copy_from(&constant_buffer)?;
+            buffer.copy_from(&camera_cb)?;
 
             let cbv_descriptor = descriptor_manager.allocate(DescriptorType::Resource)?;
-            cbv_descriptors[i] = cbv_descriptor;
+            camera_cbv_descriptors[i] = cbv_descriptor;
 
             unsafe {
                 device.CreateConstantBufferView(
@@ -488,6 +495,57 @@ impl Renderer {
             Ok(buffer)
         })?;
 
+        let model_data = ModelConstantBuffer {
+            M: glam::Mat4::from_translation(glam::Vec3::new(2.0, 0.0, 0.0)),
+        };
+        let model_buffer_size = align_data(
+            std::mem::size_of_val(&model_data),
+            D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
+        );
+        let mut model_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
+        let model_constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
+            let buffer = Resource::create_committed(
+                &device,
+                &D3D12_HEAP_PROPERTIES {
+                    Type: D3D12_HEAP_TYPE_UPLOAD,
+                    ..Default::default()
+                },
+                &D3D12_RESOURCE_DESC {
+                    Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                    Width: model_buffer_size as u64,
+                    Height: 1,
+                    DepthOrArraySize: 1,
+                    MipLevels: 1,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                    ..Default::default()
+                },
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                None,
+                true,
+            )?;
+
+            buffer.copy_from(&[model_data])?;
+
+            let cbv_descriptor = descriptor_manager.allocate(DescriptorType::Resource)?;
+            model_descriptors[i] = cbv_descriptor;
+
+            unsafe {
+                device.CreateConstantBufferView(
+                    &D3D12_CONSTANT_BUFFER_VIEW_DESC {
+                        BufferLocation: buffer.gpu_address(),
+                        SizeInBytes: buffer.size as u32,
+                    },
+                    descriptor_manager.get_cpu_handle(&cbv_descriptor)?,
+                )
+            };
+
+            Ok(buffer)
+        })?;
+
         let fence_values = [0; 2];
         let resources = RendererResources {
             hwnd,
@@ -512,11 +570,13 @@ impl Renderer {
             ibv,
             fence_values,
 
-            constant_buffers: model_constant_buffers,
-            cbv_descriptors,
-
+            camera_constant_buffers,
+            camera_cbv_descriptors,
             material_constant_buffers,
             material_descriptors,
+            model_constant_buffers,
+            model_descriptors,
+
             resource_heap,
             texture,
             texture_manager,
@@ -553,9 +613,13 @@ impl Renderer {
             command_list.Reset(command_allocator, &resources.pso)?;
         }
 
-        let cbv_gpu_handle = resources
+        let camera_cb_handle = resources
             .descriptor_manager
-            .get_gpu_handle(&resources.cbv_descriptors[resources.frame_index as usize])?;
+            .get_gpu_handle(&resources.camera_cbv_descriptors[resources.frame_index as usize])?;
+
+        let model_cb_handle = resources
+            .descriptor_manager
+            .get_gpu_handle(&resources.model_descriptors[resources.frame_index as usize])?;
 
         let material_cb_handle = resources
             .descriptor_manager
@@ -569,8 +633,9 @@ impl Renderer {
             )]);
             command_list.SetGraphicsRootSignature(&resources.root_signature);
 
-            command_list.SetGraphicsRootDescriptorTable(0, cbv_gpu_handle);
+            command_list.SetGraphicsRootDescriptorTable(0, camera_cb_handle);
             command_list.SetGraphicsRootDescriptorTable(1, material_cb_handle);
+            command_list.SetGraphicsRootDescriptorTable(2, model_cb_handle);
 
             command_list.RSSetViewports(&[resources.viewport]);
             command_list.RSSetScissorRects(&[resources.scissor_rect]);
@@ -607,7 +672,7 @@ impl Renderer {
             command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             command_list.IASetVertexBuffers(0, &[resources.vbv]);
             command_list.IASetIndexBuffer(&resources.ibv);
-            command_list.DrawIndexedInstanced(432138, 1, 0, 0, 0);
+            command_list.DrawIndexedInstanced(432138, 10, 0, 0, 0);
 
             let barrier = transition_barrier(
                 &render_target.get_resource()?.device_resource,
@@ -790,7 +855,7 @@ impl Renderer {
             glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
         ];
 
-        for cb in &mut resources.constant_buffers {
+        for cb in &mut resources.camera_constant_buffers {
             cb.copy_from(&constant_buffer)?;
         }
 

@@ -82,6 +82,7 @@ pub fn create_descriptor_table(
 
 pub fn create_root_signature(device: &ID3D12Device4) -> Result<ID3D12RootSignature> {
     let root_parameters = [
+        // CAMERA
         create_descriptor_table(
             D3D12_SHADER_VISIBILITY_ALL,
             &[D3D12_DESCRIPTOR_RANGE {
@@ -92,12 +93,24 @@ pub fn create_root_signature(device: &ID3D12Device4) -> Result<ID3D12RootSignatu
                 OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
             }],
         ),
+        // MATERIAL
         create_descriptor_table(
             D3D12_SHADER_VISIBILITY_PIXEL,
             &[D3D12_DESCRIPTOR_RANGE {
                 RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
                 NumDescriptors: 1,
                 BaseShaderRegister: 1,
+                RegisterSpace: 0,
+                OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+            }],
+        ),
+        // MODEL
+        create_descriptor_table(
+            D3D12_SHADER_VISIBILITY_ALL,
+            &[D3D12_DESCRIPTOR_RANGE {
+                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+                NumDescriptors: 1,
+                BaseShaderRegister: 2,
                 RegisterSpace: 0,
                 OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
             }],

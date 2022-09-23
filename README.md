@@ -14,6 +14,9 @@
 - [x] Resources
   - [x] Sub-allocate from a resource (for constant buffers)
 - [x] Textures
+- [x] Bindless shaders
+- [ ] Render Pass
+- [ ] Mesh abstraction
 - [ ] Precompiled shaders
 - [ ] Shader reflection
   - [ ] Parse vertex format from DXIL?
