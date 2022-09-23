@@ -3,7 +3,10 @@ cbuffer Camera : register(b0) {
     float4x4 P;
 }
 
-Texture2D t1 : register(t0);
+cbuffer Material : register(b1) {
+    uint texture_index;
+}
+
 SamplerState s1 : register(s0);
 
 struct PSInput
@@ -42,5 +45,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     light_col *= (1 / (l_dist * l_dist));
 
-    return t1.Sample(s1, input.uv) * (ldotn * light_col) / 3.14159;
+
+    Texture2D<float4> tex = ResourceDescriptorHeap[texture_index];
+
+    return tex.Sample(s1, input.uv) * (ldotn * light_col) / 3.14159;
 }

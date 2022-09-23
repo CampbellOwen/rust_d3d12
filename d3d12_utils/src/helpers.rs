@@ -95,9 +95,9 @@ pub fn create_root_signature(device: &ID3D12Device4) -> Result<ID3D12RootSignatu
         create_descriptor_table(
             D3D12_SHADER_VISIBILITY_PIXEL,
             &[D3D12_DESCRIPTOR_RANGE {
-                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
                 NumDescriptors: 1,
-                BaseShaderRegister: 0,
+                BaseShaderRegister: 1,
                 RegisterSpace: 0,
                 OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
             }],
@@ -123,7 +123,9 @@ pub fn create_root_signature(device: &ID3D12Device4) -> Result<ID3D12RootSignatu
     let desc = D3D12_ROOT_SIGNATURE_DESC {
         NumParameters: root_parameters.len() as u32,
         pParameters: root_parameters.as_ptr(),
-        Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+            | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+            | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED,
         pStaticSamplers: static_samplers.as_ptr(),
         NumStaticSamplers: static_samplers.len() as u32,
     };
@@ -200,11 +202,11 @@ fn compile_shader(filename: &str, entry_point: &str, shader_model: &str) -> Resu
 }
 
 pub fn compile_pixel_shader(filename: &str, entry_point: &str) -> Result<CompiledShader> {
-    compile_shader(filename, entry_point, "ps_6_5")
+    compile_shader(filename, entry_point, "ps_6_6")
 }
 
 pub fn compile_vertex_shader(filename: &str, entry_point: &str) -> Result<CompiledShader> {
-    compile_shader(filename, entry_point, "vs_6_5")
+    compile_shader(filename, entry_point, "vs_6_6")
 }
 
 pub fn create_pipeline_state(

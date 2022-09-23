@@ -18,7 +18,7 @@ impl Default for DescriptorType {
 #[derive(Debug, Clone, Copy)]
 pub struct DescriptorHandle {
     tag: DescriptorType,
-    index: usize,
+    pub index: usize,
 }
 
 impl Default for DescriptorHandle {

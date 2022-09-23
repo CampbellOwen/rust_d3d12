@@ -29,6 +29,12 @@ fn load_bunny() -> Result<(Vec<ObjVertex>, Vec<u32>)> {
     parse_obj(obj.lines())
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct MaterialConstantBuffer {
+    pub texture_index: u32,
+}
+
 #[derive(Debug)]
 pub(crate) struct RendererResources {
     #[allow(dead_code)]
@@ -72,6 +78,10 @@ pub(crate) struct RendererResources {
 
     #[allow(dead_code)]
     constant_buffers: [Resource; FRAME_COUNT as usize],
+    #[allow(dead_code)]
+    material_constant_buffers: [Resource; FRAME_COUNT as usize],
+    #[allow(dead_code)]
+    material_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
 }
 
 #[derive(Debug)]
@@ -222,8 +232,10 @@ impl Renderer {
 
         let root_signature = create_root_signature(&device)?;
 
-        let vertex_shader = compile_vertex_shader("renderer/src/shaders/triangle.hlsl", "VSMain")?;
-        let pixel_shader = compile_pixel_shader("renderer/src/shaders/triangle.hlsl", "PSMain")?;
+        let vertex_shader =
+            compile_vertex_shader("renderer/src/shaders/bindless_texture.hlsl", "VSMain")?;
+        let pixel_shader =
+            compile_pixel_shader("renderer/src/shaders/bindless_texture.hlsl", "PSMain")?;
 
         let input_element_descs: [D3D12_INPUT_ELEMENT_DESC; 3] = [
             D3D12_INPUT_ELEMENT_DESC {
@@ -380,7 +392,7 @@ impl Renderer {
         );
 
         let mut cbv_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
-        let constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
+        let model_constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
             let buffer = Resource::create_committed(
                 &device,
                 &D3D12_HEAP_PROPERTIES {
@@ -423,6 +435,59 @@ impl Renderer {
             Ok(buffer)
         })?;
 
+        let srv = texture_manager.get_srv(&texture)?;
+
+        let material_data = MaterialConstantBuffer {
+            texture_index: srv.index as u32,
+        };
+        let material_buffer_size = align_data(
+            std::mem::size_of_val(&material_data),
+            D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
+        );
+        let mut material_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
+        let material_constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
+            let buffer = Resource::create_committed(
+                &device,
+                &D3D12_HEAP_PROPERTIES {
+                    Type: D3D12_HEAP_TYPE_UPLOAD,
+                    ..Default::default()
+                },
+                &D3D12_RESOURCE_DESC {
+                    Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                    Width: material_buffer_size as u64,
+                    Height: 1,
+                    DepthOrArraySize: 1,
+                    MipLevels: 1,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                    ..Default::default()
+                },
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                None,
+                true,
+            )?;
+
+            buffer.copy_from(&[material_data])?;
+
+            let cbv_descriptor = descriptor_manager.allocate(DescriptorType::Resource)?;
+            material_descriptors[i] = cbv_descriptor;
+
+            unsafe {
+                device.CreateConstantBufferView(
+                    &D3D12_CONSTANT_BUFFER_VIEW_DESC {
+                        BufferLocation: buffer.gpu_address(),
+                        SizeInBytes: buffer.size as u32,
+                    },
+                    descriptor_manager.get_cpu_handle(&cbv_descriptor)?,
+                )
+            };
+
+            Ok(buffer)
+        })?;
+
         let fence_values = [0; 2];
         let resources = RendererResources {
             hwnd,
@@ -447,11 +512,14 @@ impl Renderer {
             ibv,
             fence_values,
 
-            constant_buffers,
+            constant_buffers: model_constant_buffers,
+            cbv_descriptors,
+
+            material_constant_buffers,
+            material_descriptors,
             resource_heap,
             texture,
             texture_manager,
-            cbv_descriptors,
             upload_ring_buffer,
         };
 
@@ -489,20 +557,20 @@ impl Renderer {
             .descriptor_manager
             .get_gpu_handle(&resources.cbv_descriptors[resources.frame_index as usize])?;
 
-        let texture_srv = resources.texture_manager.get_srv(&resources.texture)?;
-
-        let texture_gpu_handle = resources.descriptor_manager.get_gpu_handle(&texture_srv)?;
+        let material_cb_handle = resources
+            .descriptor_manager
+            .get_gpu_handle(&resources.material_descriptors[resources.frame_index as usize])?;
 
         unsafe {
-            command_list.SetGraphicsRootSignature(&resources.root_signature);
-
             command_list.SetDescriptorHeaps(&[Some(
                 resources
                     .descriptor_manager
                     .get_heap(DescriptorType::Resource)?,
             )]);
+            command_list.SetGraphicsRootSignature(&resources.root_signature);
+
             command_list.SetGraphicsRootDescriptorTable(0, cbv_gpu_handle);
-            command_list.SetGraphicsRootDescriptorTable(1, texture_gpu_handle);
+            command_list.SetGraphicsRootDescriptorTable(1, material_cb_handle);
 
             command_list.RSSetViewports(&[resources.viewport]);
             command_list.RSSetScissorRects(&[resources.scissor_rect]);
@@ -725,64 +793,6 @@ impl Renderer {
         for cb in &mut resources.constant_buffers {
             cb.copy_from(&constant_buffer)?;
         }
-
-        //resources.render_targets = Vec::new();
-
-        //if cfg!(debug_assertions) {
-        //    if let std::result::Result::Ok(debug_interface) =
-        //        unsafe { DXGIGetDebugInterface1::<IDXGIDebug1>(0) }
-        //    {
-        //        unsafe {
-        //            debug_interface
-        //                .ReportLiveObjects(
-        //                    DXGI_DEBUG_ALL,
-        //                    DXGI_DEBUG_RLO_DETAIL | DXGI_DEBUG_RLO_IGNORE_INTERNAL,
-        //                )
-        //                .expect("Report live objects")
-        //        };
-        //    }
-        //}
-
-        //let rtv_handles: [D3D12_CPU_DESCRIPTOR_HANDLE; FRAME_COUNT] =
-        //    array_init::try_array_init(|i| {
-        //        let handle = resources.rtv_heap.get_cpu_handle(i as u32)?;
-        //        Ok(handle)
-        //    })?;
-        //let (render_targets, viewport, scissor_rect) = resize_swapchain(
-        //    &resources.device,
-        //    &resources.swap_chain,
-        //    extent,
-        //    &rtv_handles,
-        //)?;
-
-        //let (width, height) = extent;
-
-        //let depth_buffers: [Tex2D; FRAME_COUNT as usize] = array_init::try_array_init(|i| {
-        //    let buffer =
-        //        create_depth_stencil_buffer(&resources.device, width as usize, height as usize)?;
-        //    let dsv_handle = resources
-        //        .dsv_heap
-        //        .get_cpu_handle(resources.dsv_indices[i])?;
-        //    unsafe {
-        //        resources.device.CreateDepthStencilView(
-        //            &buffer.resource,
-        //            &D3D12_DEPTH_STENCIL_VIEW_DESC {
-        //                Format: DXGI_FORMAT_D32_FLOAT,
-        //                ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
-        //                Flags: D3D12_DSV_FLAG_NONE,
-        //                ..Default::default()
-        //            },
-        //            dsv_handle,
-        //        );
-        //    }
-
-        //    Ok(buffer)
-        //})?;
-
-        //resources.render_targets = render_targets;
-        //resources.viewport = viewport;
-        //resources.scissor_rect = scissor_rect;
-        //resources.depth_buffers = depth_buffers;
 
         Ok(())
     }
