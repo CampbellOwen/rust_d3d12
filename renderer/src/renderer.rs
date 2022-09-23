@@ -598,12 +598,18 @@ impl Renderer {
         //    }
         //}
 
-        for i in (0..FRAME_COUNT) {
+        for i in 0..FRAME_COUNT {
             resources.texture_manager.delete(
                 &mut resources.descriptor_manager,
                 resources.back_buffer_handles[i].clone(),
             );
             resources.back_buffer_handles[i] = Default::default();
+
+            resources.texture_manager.delete(
+                &mut resources.descriptor_manager,
+                resources.depth_buffer_handles[i].clone(),
+            );
+            resources.depth_buffer_handles[i] = Default::default();
         }
 
         if cfg!(debug_assertions) {
@@ -621,7 +627,7 @@ impl Renderer {
             }
         }
 
-        std::println!("RESIZING BACKBUFFERS");
+        std::println!("RESIZING BACKBUFFERS to ({},{})", width, height);
 
         unsafe {
             resources.swap_chain.ResizeBuffers(
@@ -662,6 +668,30 @@ impl Renderer {
                 &mut resources.descriptor_manager,
                 back_buffer,
             )?;
+
+            resources.depth_buffer_handles[i] = resources.texture_manager.create_empty_texture(
+                &resources.device,
+                TextureInfo {
+                    dimension: TextureDimension::Two(width as usize, height),
+                    format: DXGI_FORMAT_D32_FLOAT,
+                    array_size: 1,
+                    num_mips: 1,
+                    is_render_target: false,
+                    is_depth_buffer: true,
+                    is_unordered_access: false,
+                },
+                Some(D3D12_CLEAR_VALUE {
+                    Format: DXGI_FORMAT_D32_FLOAT,
+                    Anonymous: D3D12_CLEAR_VALUE_0 {
+                        DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
+                            Depth: 1.0,
+                            Stencil: 0,
+                        },
+                    },
+                }),
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                &mut resources.descriptor_manager,
+            )?;
         }
 
         resources.frame_index = unsafe { resources.swap_chain.GetCurrentBackBufferIndex() };
@@ -681,6 +711,17 @@ impl Renderer {
             right: width as i32,
             bottom: height as i32,
         };
+
+        let aspect_ratio = (width as f32) / (height as f32);
+        let constant_buffer = [
+            glam::Mat4::from_translation(Vec3::new(0.0, -0.8, 1.5))
+                * glam::Mat4::from_rotation_y(PI),
+            glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
+        ];
+
+        for cb in &mut resources.constant_buffers {
+            cb.copy_from(&constant_buffer)?;
+        }
 
         //resources.render_targets = Vec::new();
 
