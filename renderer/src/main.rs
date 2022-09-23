@@ -10,6 +10,9 @@ use winit::{
 mod renderer;
 use renderer::Renderer;
 
+mod object;
+mod render_pass;
+
 fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
