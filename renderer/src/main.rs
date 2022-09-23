@@ -8,7 +8,7 @@ use winit::{
 };
 
 mod renderer;
-use renderer::Renderer;
+use renderer::Application;
 
 mod object;
 mod render_pass;
@@ -29,7 +29,7 @@ fn main() {
         mut width,
         mut height,
     } = window.inner_size();
-    let mut renderer = Renderer::new(hwnd, (width, height)).unwrap();
+    let mut application = Application::new(hwnd, (width, height)).unwrap();
     let mut is_closing = false;
 
     event_loop.run(move |event, _, control_flow| {
@@ -55,8 +55,8 @@ fn main() {
                         }
                     }
 
-                    renderer.wait_for_idle().unwrap();
-                    renderer = Renderer::null();
+                    application.wait_for_idle().unwrap();
+                    application = Application::null();
                     *control_flow = ControlFlow::Exit
                 }
                 WindowEvent::Resized(PhysicalSize {
@@ -64,7 +64,7 @@ fn main() {
                     height: h,
                 }) => {
                     if w != width || h != height {
-                        renderer
+                        application
                             .resize((width, height))
                             .expect("Resizing should not fail");
 
@@ -76,13 +76,14 @@ fn main() {
             },
             Event::MainEventsCleared => {
                 if !is_closing {
-                    let res = renderer.render();
-                    if res.is_err() && renderer.resources.is_some() {
+                    let res = application.render();
+                    if res.is_err() && application.renderer.is_some() {
                         unsafe {
-                            renderer
-                                .resources
+                            application
+                                .renderer
                                 .as_ref()
                                 .unwrap()
+                                .resources
                                 .device
                                 .GetDeviceRemovedReason()
                                 .unwrap()

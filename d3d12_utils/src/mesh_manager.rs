@@ -3,6 +3,7 @@ use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::DXGI_FORMAT_R32_UINT
 
 use crate::{Heap, Resource};
 
+#[derive(Debug, Default, Clone, Copy)]
 pub struct MeshHandle {
     vb_index: usize,
     ib_index: usize,
