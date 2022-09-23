@@ -179,6 +179,7 @@ impl TextureManager {
         clear_value: Option<D3D12_CLEAR_VALUE>,
         initial_state: D3D12_RESOURCE_STATES,
         descriptor_manager: &mut DescriptorManager,
+        committed_heap: bool,
     ) -> Result<TextureHandle> {
         let (dimension, width, height, depth) = match texture_info.dimension {
             TextureDimension::One(width) => (D3D12_RESOURCE_DIMENSION_TEXTURE1D, width, 1, 1),
@@ -224,13 +225,27 @@ impl TextureManager {
             ..Default::default()
         };
 
-        let texture_resource = self.texture_heap.create_resource(
-            device,
-            &texture_desc,
-            initial_state,
-            clear_value,
-            false,
-        )?;
+        let texture_resource = if committed_heap {
+            Resource::create_committed(
+                device,
+                &D3D12_HEAP_PROPERTIES {
+                    Type: D3D12_HEAP_TYPE_DEFAULT,
+                    ..Default::default()
+                },
+                &texture_desc,
+                initial_state,
+                clear_value,
+                false,
+            )?
+        } else {
+            self.texture_heap.create_resource(
+                device,
+                &texture_desc,
+                initial_state,
+                clear_value,
+                false,
+            )?
+        };
         let texture = Texture {
             info: texture_info,
             resource: Some(texture_resource),
@@ -295,6 +310,7 @@ impl TextureManager {
             None,
             D3D12_RESOURCE_STATE_COMMON,
             descriptor_manager,
+            false,
         )?;
         let texture = self.get_texture(&texture_handle)?;
 

@@ -193,6 +193,7 @@ impl Renderer {
                 }),
                 D3D12_RESOURCE_STATE_DEPTH_WRITE,
                 &mut descriptor_manager,
+                true,
             )?;
         }
 
@@ -400,6 +401,7 @@ impl Renderer {
                     ..Default::default()
                 },
                 D3D12_RESOURCE_STATE_GENERIC_READ,
+                None,
                 true,
             )?;
 
@@ -691,6 +693,7 @@ impl Renderer {
                 }),
                 D3D12_RESOURCE_STATE_DEPTH_WRITE,
                 &mut resources.descriptor_manager,
+                true,
             )?;
         }
 

@@ -89,6 +89,7 @@ impl Resource {
         heap_properties: &D3D12_HEAP_PROPERTIES,
         desc: &D3D12_RESOURCE_DESC,
         initial_state: D3D12_RESOURCE_STATES,
+        clear_value: Option<D3D12_CLEAR_VALUE>,
         mapped: bool,
     ) -> Result<Self> {
         let mut resource: Option<ID3D12Resource> = None;
@@ -99,7 +100,11 @@ impl Resource {
                 D3D12_HEAP_FLAG_NONE,
                 desc,
                 initial_state,
-                std::ptr::null(),
+                if clear_value.is_none() {
+                    std::ptr::null() as _
+                } else {
+                    clear_value.as_ref().unwrap() as _
+                },
                 &mut resource,
             )?;
         }

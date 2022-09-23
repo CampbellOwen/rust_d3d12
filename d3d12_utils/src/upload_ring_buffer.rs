@@ -132,6 +132,7 @@ impl UploadRingBuffer {
                 },
                 &buffer_desc,
                 D3D12_RESOURCE_STATE_COMMON,
+                None,
                 true,
             )?
         };
