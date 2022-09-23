@@ -44,7 +44,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 {
 
     float3 l = float3(2.0, 2.0, -1.0) - input.position_world.xyz;
-    float l_dist = length(l);
+    float l_dist = length(l) / 10.0f;
     l = normalize(l);
     float ldotn = clamp(dot(l, input.normal), 0.0, 1.0);
 
