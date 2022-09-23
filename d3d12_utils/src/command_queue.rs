@@ -1,10 +1,13 @@
 use anyhow::Result;
-use windows::Win32::{
-    Foundation::HANDLE,
-    Graphics::Direct3D12::*,
-    System::{
-        Threading::{CreateEventA, WaitForSingleObject},
-        WindowsProgramming::INFINITE,
+use windows::{
+    core::PCWSTR,
+    Win32::{
+        Foundation::HANDLE,
+        Graphics::Direct3D12::*,
+        System::{
+            Threading::{CreateEventA, WaitForSingleObject},
+            WindowsProgramming::INFINITE,
+        },
     },
 };
 
@@ -22,13 +25,18 @@ impl CommandQueue {
     pub fn new(
         device: &ID3D12Device4,
         command_type: D3D12_COMMAND_LIST_TYPE,
+        name: &str,
     ) -> Result<CommandQueue> {
-        let queue = unsafe {
+        let queue: ID3D12CommandQueue = unsafe {
             device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
                 Type: command_type,
                 ..Default::default()
             })
         }?;
+
+        unsafe {
+            queue.SetName(PCWSTR::from(&name.to_string().into()))?;
+        }
 
         // https://alextardif.com/D3D11To12P1.html
         let last_fence_value = (command_type.0 as u64) << 56;
@@ -117,6 +125,14 @@ impl CommandQueue {
     }
 
     pub fn wait_for_idle(&mut self) -> Result<()> {
-        self.wait_for_fence_blocking(self.next_fence_value - 1)
+        unsafe {
+            self.queue.Signal(&self.fence, self.next_fence_value)?;
+        }
+
+        self.wait_for_fence_blocking(self.next_fence_value)?;
+
+        self.next_fence_value += 1;
+
+        Ok(())
     }
 }

@@ -139,7 +139,11 @@ impl UploadRingBuffer {
         let submissions =
             array_init::try_array_init(|_| -> Result<Submission> { Submission::new(device) })?;
 
-        let upload_queue = CommandQueue::new(device, D3D12_COMMAND_LIST_TYPE_COPY)?;
+        let upload_queue = CommandQueue::new(
+            device,
+            D3D12_COMMAND_LIST_TYPE_COPY,
+            "Upload Ring Buffer Copy Command Queue",
+        )?;
 
         Ok(UploadRingBuffer {
             buffer_size: size,

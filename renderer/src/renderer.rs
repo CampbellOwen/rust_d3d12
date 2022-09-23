@@ -5,7 +5,7 @@ use anyhow::{ensure, Ok, Result};
 use glam::Vec3;
 use image::io::Reader as ImageReader;
 
-use windows::core::PCSTR;
+use windows::core::{PCSTR, PCWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
@@ -79,6 +79,8 @@ pub struct Renderer {
     pub(crate) resources: Option<RendererResources>,
 }
 
+static mut COUNTER: u32 = 0;
+
 impl Renderer {
     pub fn null() -> Renderer {
         Renderer { resources: None }
@@ -116,7 +118,11 @@ impl Renderer {
 
         let (width, height) = window_size;
 
-        let graphics_queue = CommandQueue::new(&device, D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let graphics_queue = CommandQueue::new(
+            &device,
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            "Main Graphics Queue",
+        )?;
 
         let mut upload_ring_buffer = UploadRingBuffer::new(&device, None, None)?;
         let mut texture_manager = TextureManager::new(&device, None)?;
@@ -140,6 +146,10 @@ impl Renderer {
         let mut depth_buffer_handles: [TextureHandle; FRAME_COUNT] = Default::default();
         for i in 0..FRAME_COUNT {
             let back_buffer: ID3D12Resource = unsafe { swap_chain.GetBuffer(i as u32) }?;
+            unsafe {
+                back_buffer.SetName(PCWSTR::from(&format!("Backbuffer {}", COUNTER).into()))?;
+                COUNTER += 1;
+            }
             let back_buffer = Resource {
                 device_resource: back_buffer,
                 size: (width * height * 4) as usize,
@@ -201,19 +211,6 @@ impl Renderer {
             right: width as i32,
             bottom: height as i32,
         };
-
-        let new_texture = texture_manager.create_empty_texture(
-            &device,
-            TextureInfo {
-                format: DXGI_FORMAT_R8G8B8A8_UINT,
-                ..Default::default()
-            },
-            None,
-            D3D12_RESOURCE_STATE_COMMON,
-            &mut descriptor_manager,
-        )?;
-
-        texture_manager.delete(new_texture);
 
         let command_allocators: [ID3D12CommandAllocator; FRAME_COUNT as usize] =
             array_init::try_array_init(|_| -> Result<ID3D12CommandAllocator> {
@@ -519,7 +516,9 @@ impl Renderer {
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
         );
-        unsafe { command_list.ResourceBarrier(&[barrier]) };
+        unsafe { command_list.ResourceBarrier(&[barrier.clone()]) };
+        let _: D3D12_RESOURCE_TRANSITION_BARRIER =
+            unsafe { std::mem::ManuallyDrop::into_inner(barrier.Anonymous.Transition) };
 
         let rtv_handle = resources.texture_manager.get_rtv(render_target_handle)?;
         let rtv = resources.descriptor_manager.get_cpu_handle(&rtv_handle)?;
@@ -540,11 +539,14 @@ impl Renderer {
             command_list.IASetIndexBuffer(&resources.ibv);
             command_list.DrawIndexedInstanced(432138, 1, 0, 0, 0);
 
-            command_list.ResourceBarrier(&[transition_barrier(
+            let barrier = transition_barrier(
                 &render_target.get_resource()?.device_resource,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
-            )]);
+            );
+            command_list.ResourceBarrier(&[barrier.clone()]);
+            let _: D3D12_RESOURCE_TRANSITION_BARRIER =
+                std::mem::ManuallyDrop::into_inner(barrier.Anonymous.Transition);
         }
 
         unsafe {
@@ -556,22 +558,129 @@ impl Renderer {
 
     pub fn resize(&mut self, _extent: (u32, u32)) -> Result<()> {
         ensure!(self.resources.is_some());
-        //self.wait_for_idle().expect("All GPU work done");
-        //let resources = self.resources.as_mut().unwrap();
+        self.wait_for_idle().expect("All GPU work done");
+        let resources = self.resources.as_mut().unwrap();
 
-        //// Resetting the command allocator while the frame is being rendered is not okay
-        //for i in 0..FRAME_COUNT {
-        //    let command_allocator = &resources.command_allocators[i];
-        //    unsafe {
-        //        command_allocator.Reset()?;
-        //    }
-        //    let command_list = &resources.command_list;
-        //    unsafe {
-        //        command_list.Close();
-        //        command_list.Reset(command_allocator, &resources.pso)?;
-        //        command_list.Close();
+        // Resetting the command allocator while the frame is being rendered is not okay
+        for i in 0..FRAME_COUNT {
+            let command_allocator = &resources.command_allocators[i];
+            unsafe {
+                command_allocator.Reset()?;
+            }
+            let command_list = &resources.command_list;
+            unsafe {
+                command_list.Reset(command_allocator, &resources.pso)?;
+                command_list.Close()?;
+            }
+            resources.command_list = unsafe {
+                resources.device.CreateCommandList1(
+                    0,
+                    D3D12_COMMAND_LIST_TYPE_DIRECT,
+                    D3D12_COMMAND_LIST_FLAG_NONE,
+                )
+            }?;
+        }
+
+        let (width, height) = _extent;
+
+        //if cfg!(debug_assertions) {
+        //    if let std::result::Result::Ok(debug_interface) =
+        //        unsafe { DXGIGetDebugInterface1::<IDXGIDebug1>(0) }
+        //    {
+        //        unsafe {
+        //            debug_interface
+        //                .ReportLiveObjects(
+        //                    DXGI_DEBUG_ALL,
+        //                    DXGI_DEBUG_RLO_DETAIL | DXGI_DEBUG_RLO_IGNORE_INTERNAL,
+        //                )
+        //                .expect("Report live objects")
+        //        };
         //    }
         //}
+
+        for i in (0..FRAME_COUNT) {
+            resources.texture_manager.delete(
+                &mut resources.descriptor_manager,
+                resources.back_buffer_handles[i].clone(),
+            );
+            resources.back_buffer_handles[i] = Default::default();
+        }
+
+        if cfg!(debug_assertions) {
+            if let std::result::Result::Ok(debug_interface) =
+                unsafe { DXGIGetDebugInterface1::<IDXGIDebug1>(0) }
+            {
+                unsafe {
+                    debug_interface
+                        .ReportLiveObjects(
+                            DXGI_DEBUG_ALL,
+                            DXGI_DEBUG_RLO_DETAIL | DXGI_DEBUG_RLO_IGNORE_INTERNAL,
+                        )
+                        .expect("Report live objects")
+                };
+            }
+        }
+
+        std::println!("RESIZING BACKBUFFERS");
+
+        unsafe {
+            resources.swap_chain.ResizeBuffers(
+                FRAME_COUNT as u32,
+                width,
+                height,
+                DXGI_FORMAT_UNKNOWN,
+                0,
+            )?;
+        }
+
+        for i in 0..FRAME_COUNT {
+            let back_buffer: ID3D12Resource = unsafe { resources.swap_chain.GetBuffer(i as u32) }?;
+            unsafe {
+                back_buffer.SetName(PCWSTR::from(&format!("Backbuffer {}", COUNTER).into()))?;
+                COUNTER += 1;
+            }
+            let back_buffer = Resource {
+                device_resource: back_buffer,
+                size: (width * height * 4) as usize,
+                mapped_data: std::ptr::null_mut(),
+            };
+            let back_buffer = Texture {
+                info: TextureInfo {
+                    dimension: TextureDimension::Two(width as usize, height),
+                    format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    array_size: 1,
+                    num_mips: 1,
+                    is_render_target: true,
+                    is_depth_buffer: false,
+                    is_unordered_access: false,
+                },
+                resource: Some(back_buffer),
+            };
+
+            resources.back_buffer_handles[i] = resources.texture_manager.add_texture(
+                &resources.device,
+                &mut resources.descriptor_manager,
+                back_buffer,
+            )?;
+        }
+
+        resources.frame_index = unsafe { resources.swap_chain.GetCurrentBackBufferIndex() };
+
+        resources.viewport = D3D12_VIEWPORT {
+            TopLeftX: 0.0,
+            TopLeftY: 0.0,
+            Width: width as f32,
+            Height: height as f32,
+            MinDepth: D3D12_MIN_DEPTH,
+            MaxDepth: D3D12_MAX_DEPTH,
+        };
+
+        resources.scissor_rect = RECT {
+            left: 0,
+            top: 0,
+            right: width as i32,
+            bottom: height as i32,
+        };
 
         //resources.render_targets = Vec::new();
 

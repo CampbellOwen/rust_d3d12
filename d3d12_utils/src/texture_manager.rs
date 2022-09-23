@@ -98,20 +98,24 @@ impl TextureManager {
         })
     }
 
-    pub fn delete(&mut self, handle: TextureHandle) {
+    pub fn delete(&mut self, descriptor_manager: &mut DescriptorManager, handle: TextureHandle) {
         let texture_index = handle.index;
         self.textures[texture_index] = Texture::default();
 
         if let Some(rtv_index) = handle.rtv_index {
+            descriptor_manager.free(self.rtv_descriptors[rtv_index]);
             self.rtv_descriptors[rtv_index] = DescriptorHandle::default();
         }
         if let Some(srv_index) = handle.srv_index {
+            descriptor_manager.free(self.srv_descriptors[srv_index]);
             self.srv_descriptors[srv_index] = DescriptorHandle::default();
         }
         if let Some(uav_index) = handle.uav_index {
+            descriptor_manager.free(self.uav_descriptors[uav_index]);
             self.uav_descriptors[uav_index] = DescriptorHandle::default();
         }
         if let Some(dsv_index) = handle.dsv_index {
+            descriptor_manager.free(self.dsv_descriptors[dsv_index]);
             self.dsv_descriptors[dsv_index] = DescriptorHandle::default();
         }
     }
