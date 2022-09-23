@@ -1,9 +1,10 @@
 use std::f32::consts::PI;
 use std::ffi::c_void;
+use std::fs::File;
+use std::io::BufReader;
 
-use anyhow::{ensure, Ok, Result};
+use anyhow::{ensure, Context, Ok, Result};
 use glam::Vec3;
-use image::io::Reader as ImageReader;
 
 use windows::core::{PCSTR, PCWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
@@ -366,25 +367,40 @@ impl Renderer {
 
         // TEXTURE UPLOAD
 
-        let img = ImageReader::open(r"F:\Textures\uv_checker.png")?
-            .decode()?
-            .to_rgba8();
+        let f = File::open(r"F:\Textures\uv_checker.dds")?;
+        let reader = BufReader::new(f);
+
+        let dds_file = ddsfile::Dds::read(reader)?;
+
+        let dimension = if dds_file.get_depth() > 1 {
+            TextureDimension::Three(
+                dds_file.get_width() as usize,
+                dds_file.get_height(),
+                dds_file.get_depth() as u16,
+            )
+        } else if dds_file.get_height() > 1 {
+            TextureDimension::Two(dds_file.get_width() as usize, dds_file.get_height())
+        } else {
+            TextureDimension::One(dds_file.get_width() as usize)
+        };
+
+        let texture_info = TextureInfo {
+            dimension,
+            format: DXGI_FORMAT(dds_file.get_dxgi_format().context("No DXGI format")? as u32),
+            array_size: dds_file.get_num_array_layers() as u16,
+            num_mips: dds_file.get_num_mipmap_levels() as u16,
+            is_render_target: false,
+            is_depth_buffer: false,
+            is_unordered_access: false,
+        };
 
         let texture = texture_manager.create_texture(
             &device,
             &mut upload_ring_buffer,
             Some(&graphics_queue),
             &mut descriptor_manager,
-            TextureInfo {
-                dimension: TextureDimension::Two(img.width() as usize, img.height()),
-                format: DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-                array_size: 1,
-                num_mips: 1,
-                is_depth_buffer: false,
-                is_unordered_access: false,
-                is_render_target: false,
-            },
-            img.as_flat_samples().samples,
+            texture_info,
+            &dds_file.data,
         )?;
 
         let aspect_ratio = (width as f32) / (height as f32);
