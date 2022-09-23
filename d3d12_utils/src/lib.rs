@@ -24,3 +24,6 @@ pub use upload_ring_buffer::*;
 
 mod descriptor_manager;
 pub use descriptor_manager::*;
+
+mod mesh_manager;
+pub use mesh_manager::*;
