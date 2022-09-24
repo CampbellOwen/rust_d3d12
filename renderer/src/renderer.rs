@@ -17,6 +17,9 @@ const FRAME_COUNT: usize = 2;
 
 use d3d12_utils::*;
 
+use crate::render_pass::bindless_texture_pass::BindlessTexturePass;
+use crate::render_pass::RenderPass;
+
 #[allow(dead_code)]
 fn load_cube() -> Result<(Vec<ObjVertex>, Vec<u32>)> {
     let cube_obj = std::fs::read_to_string(r"F:\Models\cube.obj")?;
@@ -75,6 +78,8 @@ pub(crate) struct Renderer {
     mesh_handles: Vec<MeshHandle>,
 
     texture: TextureHandle,
+
+    render_passes: Vec<Box<dyn RenderPass>>,
 
     #[allow(dead_code)]
     camera_constant_buffers: [Resource; FRAME_COUNT as usize],
@@ -551,6 +556,8 @@ impl Application {
             Ok(buffer)
         })?;
 
+        let render_passes: Vec<Box<dyn RenderPass>> = vec![Box::new(BindlessTexturePass::new())];
+
         let fence_values = [0; 2];
         let resources = Renderer {
             hwnd,
@@ -587,6 +594,7 @@ impl Application {
             mesh_handles,
 
             texture,
+            render_passes,
         };
 
         let mut renderer = Application {
@@ -926,22 +934,21 @@ impl Application {
 
         self.populate_command_list()?;
 
-        let resources = self.renderer.as_mut().unwrap();
+        let renderer = self.renderer.as_mut().unwrap();
 
-        let command_list = ID3D12CommandList::from(&resources.command_list);
+        let command_list = ID3D12CommandList::from(&renderer.command_list);
 
-        let fence_value = resources
+        let fence_value = renderer
             .graphics_queue
             .execute_command_list(&command_list)?;
 
-        resources.fence_values[resources.resources.frame_index as usize] = fence_value;
+        renderer.fence_values[renderer.resources.frame_index as usize] = fence_value;
 
-        unsafe { resources.swap_chain.Present(1, 0) }.ok()?;
+        unsafe { renderer.swap_chain.Present(1, 0) }.ok()?;
 
-        resources.resources.frame_index =
-            unsafe { resources.swap_chain.GetCurrentBackBufferIndex() };
+        renderer.resources.frame_index = unsafe { renderer.swap_chain.GetCurrentBackBufferIndex() };
 
-        resources
+        renderer
             .resources
             .upload_ring_buffer
             .clean_up_submissions()?;

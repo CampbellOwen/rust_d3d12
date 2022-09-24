@@ -5,8 +5,9 @@ use crate::{object::Object, renderer::Resources};
 
 pub mod bindless_texture_pass;
 
-pub trait RenderPass {
+pub trait RenderPass: std::fmt::Debug {
     fn render(
+        &mut self,
         command_list: &ID3D12GraphicsCommandList,
         resources: &mut Resources,
         objects: &[Object],
