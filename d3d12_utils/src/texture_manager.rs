@@ -70,11 +70,11 @@ pub struct TextureManager {
 
 #[derive(Debug, Default, Clone)]
 pub struct TextureHandle {
-    index: usize,
-    rtv_index: Option<usize>,
-    srv_index: Option<usize>,
-    uav_index: Option<usize>,
-    dsv_index: Option<usize>,
+    pub index: usize,
+    pub rtv_index: Option<usize>,
+    pub srv_index: Option<usize>,
+    pub uav_index: Option<usize>,
+    pub dsv_index: Option<usize>,
 }
 
 const MAX_NUM_SUBRESOURCES: usize = 32;

@@ -17,8 +17,8 @@ const FRAME_COUNT: usize = 2;
 
 use d3d12_utils::*;
 
+use crate::object::Object;
 use crate::render_pass::bindless_texture_pass::BindlessTexturePass;
-use crate::render_pass::RenderPass;
 
 #[allow(dead_code)]
 fn load_cube() -> Result<(Vec<ObjVertex>, Vec<u32>)> {
@@ -31,6 +31,13 @@ fn load_bunny() -> Result<(Vec<ObjVertex>, Vec<u32>)> {
     let obj = std::fs::read_to_string(r"F:\Models\bunny.obj")?;
 
     parse_obj(obj.lines())
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Camera {
+    V: glam::Mat4,
+    P: glam::Mat4,
 }
 
 #[repr(C)]
@@ -55,6 +62,7 @@ pub struct Resources {
     pub upload_ring_buffer: UploadRingBuffer,
     pub viewport: D3D12_VIEWPORT,
     pub scissor_rect: RECT,
+    pub camera: Camera,
 }
 #[derive(Debug)]
 pub(crate) struct Renderer {
@@ -75,11 +83,7 @@ pub(crate) struct Renderer {
 
     pub(crate) resources: Resources,
 
-    mesh_handles: Vec<MeshHandle>,
-
-    texture: TextureHandle,
-
-    render_passes: Vec<Box<dyn RenderPass>>,
+    basic_render_pass: BindlessTexturePass<FRAME_COUNT>,
 
     #[allow(dead_code)]
     camera_constant_buffers: [Resource; FRAME_COUNT as usize],
@@ -90,6 +94,8 @@ pub(crate) struct Renderer {
     #[allow(dead_code)]
     model_constant_buffers: [Resource; FRAME_COUNT as usize],
     model_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
+
+    objects: Vec<Object>,
 }
 
 #[derive(Debug)]
@@ -257,14 +263,34 @@ impl Renderer {
             bottom: height as i32,
         };
 
+        let aspect_ratio = (width as f32) / (height as f32);
+        let camera = Camera {
+            V: glam::Mat4::from_translation(Vec3::new(0.0, -0.8, 1.5)).inverse(),
+            P: glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
+        };
+        let mut resources = Resources {
+            device,
+            frame_index,
+            descriptor_manager,
+            texture_manager,
+            mesh_manager,
+            upload_ring_buffer,
+            viewport,
+            scissor_rect,
+            camera,
+        };
+
         let command_allocators: [ID3D12CommandAllocator; FRAME_COUNT as usize] =
             array_init::try_array_init(|_| -> Result<ID3D12CommandAllocator> {
-                let allocator =
-                    unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }?;
+                let allocator = unsafe {
+                    resources
+                        .device
+                        .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+                }?;
                 Ok(allocator)
             })?;
 
-        let root_signature = create_root_signature(&device)?;
+        let root_signature = create_root_signature(&resources.device)?;
 
         let vertex_shader =
             compile_vertex_shader("renderer/src/shaders/bindless_texture.hlsl", "VSMain")?;
@@ -301,7 +327,7 @@ impl Renderer {
             },
         ];
         let pso = create_pipeline_state(
-            &device,
+            &resources.device,
             &root_signature,
             &input_element_descs,
             &vertex_shader,
@@ -310,7 +336,7 @@ impl Renderer {
         )?;
 
         let command_list: ID3D12GraphicsCommandList = unsafe {
-            device.CreateCommandList1(
+            resources.device.CreateCommandList1(
                 0,
                 D3D12_COMMAND_LIST_TYPE_DIRECT,
                 D3D12_COMMAND_LIST_FLAG_NONE,
@@ -333,15 +359,17 @@ impl Renderer {
             ..Default::default()
         };
 
-        let vertex_buffer = mesh_manager.heap.create_resource(
-            &device,
+        let vertex_buffer = resources.mesh_manager.heap.create_resource(
+            &resources.device,
             &vb_desc,
             D3D12_RESOURCE_STATE_COMMON,
             None,
             false,
         )?;
 
-        let upload = upload_ring_buffer.allocate(std::mem::size_of_val(vertices.as_slice()))?;
+        let upload = resources
+            .upload_ring_buffer
+            .allocate(std::mem::size_of_val(vertices.as_slice()))?;
         upload.sub_resource.copy_from(&vertices)?;
         upload
             .sub_resource
@@ -362,27 +390,22 @@ impl Renderer {
             ..Default::default()
         };
 
-        let index_buffer = mesh_manager.heap.create_resource(
-            &device,
+        let index_buffer = resources.mesh_manager.heap.create_resource(
+            &resources.device,
             &index_buffer_desc,
             D3D12_RESOURCE_STATE_COMMON,
             None,
             false,
         )?;
 
-        let upload = upload_ring_buffer.allocate(index_buffer_desc.Width as usize)?;
+        let upload = resources
+            .upload_ring_buffer
+            .allocate(index_buffer_desc.Width as usize)?;
         upload.sub_resource.copy_from(&indices)?;
         upload
             .sub_resource
             .copy_to_resource(&upload.command_list, &index_buffer)?;
         upload.submit(Some(&graphics_queue))?;
-
-        let mesh_handles = vec![mesh_manager.add(
-            vertex_buffer,
-            index_buffer,
-            std::mem::size_of::<ObjVertex>() as u32,
-            vertices.len(),
-        )?];
 
         // TEXTURE UPLOAD
 
@@ -413,30 +436,24 @@ impl Renderer {
             is_unordered_access: false,
         };
 
-        let texture = texture_manager.create_texture(
-            &device,
-            &mut upload_ring_buffer,
+        let texture = resources.texture_manager.create_texture(
+            &resources.device,
+            &mut resources.upload_ring_buffer,
             Some(&graphics_queue),
-            &mut descriptor_manager,
+            &mut resources.descriptor_manager,
             texture_info,
             &dds_file.data,
         )?;
 
-        let aspect_ratio = (width as f32) / (height as f32);
-        let camera_cb = [
-            glam::Mat4::from_translation(Vec3::new(0.0, -0.8, 1.5)).inverse(),
-            //* glam::Mat4::from_rotation_y(PI),
-            glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
-        ];
         let camera_buffer_size = align_data(
-            std::mem::size_of_val(&camera_cb),
+            std::mem::size_of::<Camera>(),
             D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
         );
 
         let mut camera_cbv_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
         let camera_constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
             let buffer = Resource::create_committed(
-                &device,
+                &resources.device,
                 &D3D12_HEAP_PROPERTIES {
                     Type: D3D12_HEAP_TYPE_UPLOAD,
                     ..Default::default()
@@ -459,25 +476,29 @@ impl Renderer {
                 true,
             )?;
 
-            buffer.copy_from(&camera_cb)?;
+            buffer.copy_from(&[camera])?;
 
-            let cbv_descriptor = descriptor_manager.allocate(DescriptorType::Resource)?;
+            let cbv_descriptor = resources
+                .descriptor_manager
+                .allocate(DescriptorType::Resource)?;
             camera_cbv_descriptors[i] = cbv_descriptor;
 
             unsafe {
-                device.CreateConstantBufferView(
+                resources.device.CreateConstantBufferView(
                     &D3D12_CONSTANT_BUFFER_VIEW_DESC {
                         BufferLocation: buffer.gpu_address(),
                         SizeInBytes: buffer.size as u32,
                     },
-                    descriptor_manager.get_cpu_handle(&cbv_descriptor)?,
+                    resources
+                        .descriptor_manager
+                        .get_cpu_handle(&cbv_descriptor)?,
                 )
             };
 
             Ok(buffer)
         })?;
 
-        let srv = texture_manager.get_srv(&texture)?;
+        let srv = resources.texture_manager.get_srv(&texture)?;
 
         let material_data = MaterialConstantBuffer {
             texture_index: srv.index as u32,
@@ -489,7 +510,7 @@ impl Renderer {
         let mut material_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
         let material_constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
             let buffer = Resource::create_committed(
-                &device,
+                &resources.device,
                 &D3D12_HEAP_PROPERTIES {
                     Type: D3D12_HEAP_TYPE_UPLOAD,
                     ..Default::default()
@@ -514,16 +535,20 @@ impl Renderer {
 
             buffer.copy_from(&[material_data])?;
 
-            let cbv_descriptor = descriptor_manager.allocate(DescriptorType::Resource)?;
+            let cbv_descriptor = resources
+                .descriptor_manager
+                .allocate(DescriptorType::Resource)?;
             material_descriptors[i] = cbv_descriptor;
 
             unsafe {
-                device.CreateConstantBufferView(
+                resources.device.CreateConstantBufferView(
                     &D3D12_CONSTANT_BUFFER_VIEW_DESC {
                         BufferLocation: buffer.gpu_address(),
                         SizeInBytes: buffer.size as u32,
                     },
-                    descriptor_manager.get_cpu_handle(&cbv_descriptor)?,
+                    resources
+                        .descriptor_manager
+                        .get_cpu_handle(&cbv_descriptor)?,
                 )
             };
 
@@ -540,7 +565,7 @@ impl Renderer {
         let mut model_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
         let model_constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
             let buffer = Resource::create_committed(
-                &device,
+                &resources.device,
                 &D3D12_HEAP_PROPERTIES {
                     Type: D3D12_HEAP_TYPE_UPLOAD,
                     ..Default::default()
@@ -565,23 +590,38 @@ impl Renderer {
 
             buffer.copy_from(&[model_data])?;
 
-            let cbv_descriptor = descriptor_manager.allocate(DescriptorType::Resource)?;
+            let cbv_descriptor = resources
+                .descriptor_manager
+                .allocate(DescriptorType::Resource)?;
             model_descriptors[i] = cbv_descriptor;
 
             unsafe {
-                device.CreateConstantBufferView(
+                resources.device.CreateConstantBufferView(
                     &D3D12_CONSTANT_BUFFER_VIEW_DESC {
                         BufferLocation: buffer.gpu_address(),
                         SizeInBytes: buffer.size as u32,
                     },
-                    descriptor_manager.get_cpu_handle(&cbv_descriptor)?,
+                    resources
+                        .descriptor_manager
+                        .get_cpu_handle(&cbv_descriptor)?,
                 )
             };
 
             Ok(buffer)
         })?;
+        let basic_render_pass = BindlessTexturePass::new(&mut resources)?;
 
-        let render_passes: Vec<Box<dyn RenderPass>> = vec![Box::new(BindlessTexturePass::new())];
+        let objects = vec![Object {
+            position: Vec3::new(0.0, 0.0, 1.0),
+            texture,
+            mesh: resources.mesh_manager.add(
+                vertex_buffer,
+                index_buffer,
+                std::mem::size_of::<ObjVertex>() as u32,
+                vertices.len(),
+            )?,
+        }];
+
         graphics_queue.wait_for_idle()?;
 
         let fence_values = [0; 2];
@@ -589,16 +629,7 @@ impl Renderer {
             hwnd,
             dxgi_factory,
 
-            resources: Resources {
-                device,
-                frame_index,
-                descriptor_manager,
-                texture_manager,
-                mesh_manager,
-                upload_ring_buffer,
-                viewport,
-                scissor_rect,
-            },
+            resources,
 
             graphics_queue,
             swap_chain,
@@ -617,10 +648,8 @@ impl Renderer {
             model_constant_buffers,
             model_descriptors,
 
-            mesh_handles,
-
-            texture,
-            render_passes,
+            basic_render_pass,
+            objects,
         };
 
         Ok(renderer)
@@ -706,18 +735,19 @@ impl Renderer {
 
         unsafe {
             command_list.OMSetRenderTargets(1, &rtv, false, &dsv);
+
+            command_list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, &[]);
+            command_list.ClearRenderTargetView(rtv, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
+            command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         }
 
-        for mesh in &self.mesh_handles {
-            unsafe {
-                command_list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, &[]);
-                command_list.ClearRenderTargetView(rtv, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
-                command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                command_list.IASetVertexBuffers(0, &[mesh.vbv.context("No vertex buffer view")?]);
-                command_list.IASetIndexBuffer(&mesh.ibv.context("No index buffer view")?);
-                command_list.DrawIndexedInstanced(432138, 10, 0, 0, 0);
-            }
-        }
+        //for mesh in &self.mesh_handles {
+        //    unsafe {
+        //        command_list.IASetVertexBuffers(0, &[mesh.vbv.context("No vertex buffer view")?]);
+        //        command_list.IASetIndexBuffer(&mesh.ibv.context("No index buffer view")?);
+        //        command_list.DrawIndexedInstanced(432138, 10, 0, 0, 0);
+        //    }
+        //}
         unsafe {
             let barrier = transition_barrier(
                 &render_target.get_resource()?.device_resource,
@@ -890,15 +920,17 @@ impl Renderer {
         };
 
         let aspect_ratio = (width as f32) / (height as f32);
-        let constant_buffer = [
-            glam::Mat4::from_translation(Vec3::new(0.0, -0.8, 1.5))
-                * glam::Mat4::from_rotation_y(PI),
-            glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
-        ];
+
+        let camera = Camera {
+            V: glam::Mat4::from_translation(Vec3::new(0.0, -0.8, 1.5)),
+            P: glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
+        };
 
         for cb in &mut self.camera_constant_buffers {
-            cb.copy_from(&constant_buffer)?;
+            cb.copy_from(&[camera])?;
         }
+
+        self.resources.camera = camera;
 
         Ok(())
     }
@@ -915,13 +947,93 @@ impl Renderer {
         self.graphics_queue
             .wait_for_fence_blocking(last_fence_value)?;
 
-        self.populate_command_list()?;
+        //self.populate_command_list()?;
+        // Resetting the command allocator while the frame is being rendered is not okay
+        let command_allocator = &self.command_allocators[self.resources.frame_index as usize];
+        unsafe {
+            command_allocator.Reset()?;
+        }
 
-        let command_list = ID3D12CommandList::from(&self.command_list);
+        // Resetting the command list can happen right after submission
+        let command_list = &self.command_list;
+        unsafe {
+            command_list.Reset(command_allocator, None)?;
+        }
 
-        let fence_value = self.graphics_queue.execute_command_list(&command_list)?;
+        let render_target_handle = &self.back_buffer_handles[self.resources.frame_index as usize];
+        let depth_buffer_handle = &self.depth_buffer_handles[self.resources.frame_index as usize];
+
+        let rtv_handle = self
+            .resources
+            .texture_manager
+            .get_rtv(render_target_handle)?;
+        let rtv = self
+            .resources
+            .descriptor_manager
+            .get_cpu_handle(&rtv_handle)?;
+
+        let dsv_handle = self
+            .resources
+            .texture_manager
+            .get_dsv(depth_buffer_handle)?;
+        let dsv = self
+            .resources
+            .descriptor_manager
+            .get_cpu_handle(&dsv_handle)?;
+        unsafe {
+            command_list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, &[]);
+            command_list.ClearRenderTargetView(rtv, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
+        }
+
+        let render_target = self
+            .resources
+            .texture_manager
+            .get_texture(render_target_handle)?;
+
+        let barrier = transition_barrier(
+            &render_target.get_resource()?.device_resource,
+            D3D12_RESOURCE_STATE_PRESENT,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+        );
+        unsafe { command_list.ResourceBarrier(&[barrier.clone()]) };
+
+        let _: D3D12_RESOURCE_TRANSITION_BARRIER =
+            unsafe { std::mem::ManuallyDrop::into_inner(barrier.Anonymous.Transition) };
+        self.basic_render_pass.render(
+            command_list,
+            &mut self.resources,
+            render_target_handle,
+            depth_buffer_handle,
+            &self.objects,
+        )?;
+
+        unsafe {
+            command_list.Close()?;
+        }
+
+        let generic_command_list = ID3D12CommandList::from(&self.command_list);
+
+        let fence_value = self
+            .graphics_queue
+            .execute_command_list(&generic_command_list)?;
 
         self.fence_values[self.resources.frame_index as usize] = fence_value;
+
+        let render_target = self
+            .resources
+            .texture_manager
+            .get_texture(render_target_handle)?;
+
+        unsafe {
+            let barrier = transition_barrier(
+                &render_target.get_resource()?.device_resource,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PRESENT,
+            );
+            command_list.ResourceBarrier(&[barrier.clone()]);
+            let _: D3D12_RESOURCE_TRANSITION_BARRIER =
+                std::mem::ManuallyDrop::into_inner(barrier.Anonymous.Transition);
+        }
 
         unsafe { self.swap_chain.Present(1, 0) }.ok()?;
 
