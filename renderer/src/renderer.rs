@@ -3,10 +3,10 @@ use std::ffi::c_void;
 use std::fs::File;
 use std::io::BufReader;
 
-use anyhow::{ensure, Context, Ok, Result};
+use anyhow::{Context, Ok, Result};
 use glam::Vec3;
 
-use windows::core::{PCSTR, PCWSTR};
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
@@ -76,24 +76,12 @@ pub(crate) struct Renderer {
     swap_chain: IDXGISwapChain3,
     back_buffer_handles: [TextureHandle; FRAME_COUNT],
     depth_buffer_handles: [TextureHandle; FRAME_COUNT],
-    root_signature: ID3D12RootSignature,
-    pso: ID3D12PipelineState,
     command_list: ID3D12GraphicsCommandList,
     fence_values: [u64; FRAME_COUNT as usize],
 
     pub(crate) resources: Resources,
 
     basic_render_pass: BindlessTexturePass<FRAME_COUNT>,
-
-    #[allow(dead_code)]
-    camera_constant_buffers: [Resource; FRAME_COUNT as usize],
-    camera_cbv_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
-    #[allow(dead_code)]
-    material_constant_buffers: [Resource; FRAME_COUNT as usize],
-    material_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
-    #[allow(dead_code)]
-    model_constant_buffers: [Resource; FRAME_COUNT as usize],
-    model_descriptors: [DescriptorHandle; FRAME_COUNT as usize],
 
     objects: Vec<Object>,
 }
@@ -173,10 +161,10 @@ impl Renderer {
             "Main Graphics Queue",
         )?;
 
-        let mut upload_ring_buffer = UploadRingBuffer::new(&device, None, Some(5e8 as usize))?;
+        let upload_ring_buffer = UploadRingBuffer::new(&device, None, Some(5e8 as usize))?;
         let mut texture_manager = TextureManager::new(&device, None)?;
         let mut descriptor_manager = DescriptorManager::new(&device)?;
-        let mut mesh_manager = MeshManager::new(&device)?;
+        let mesh_manager = MeshManager::new(&device)?;
 
         let swap_chain_format = DXGI_FORMAT_R8G8B8A8_UNORM;
         let swap_chain = create_swapchain(
@@ -290,51 +278,6 @@ impl Renderer {
                 Ok(allocator)
             })?;
 
-        let root_signature = create_root_signature(&resources.device)?;
-
-        let vertex_shader =
-            compile_vertex_shader("renderer/src/shaders/bindless_texture.hlsl", "VSMain")?;
-        let pixel_shader =
-            compile_pixel_shader("renderer/src/shaders/bindless_texture.hlsl", "PSMain")?;
-
-        let input_element_descs: [D3D12_INPUT_ELEMENT_DESC; 3] = [
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(b"POSITION\0".as_ptr()),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 0,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(b"NORMAL\0".as_ptr()),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 12,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(b"TEXCOORD\0".as_ptr()),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 24,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-        ];
-        let pso = create_pipeline_state(
-            &resources.device,
-            &root_signature,
-            &input_element_descs,
-            &vertex_shader,
-            &pixel_shader,
-            1,
-        )?;
-
         let command_list: ID3D12GraphicsCommandList = unsafe {
             resources.device.CreateCommandList1(
                 0,
@@ -445,186 +388,32 @@ impl Renderer {
             &dds_file.data,
         )?;
 
-        let camera_buffer_size = align_data(
-            std::mem::size_of::<Camera>(),
-            D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
-        );
+        let mesh_handle = resources.mesh_manager.add(
+            vertex_buffer,
+            index_buffer,
+            std::mem::size_of::<ObjVertex>() as u32,
+            vertices.len(),
+        )?;
 
-        let mut camera_cbv_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
-        let camera_constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
-            let buffer = Resource::create_committed(
-                &resources.device,
-                &D3D12_HEAP_PROPERTIES {
-                    Type: D3D12_HEAP_TYPE_UPLOAD,
-                    ..Default::default()
-                },
-                &D3D12_RESOURCE_DESC {
-                    Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                    Width: camera_buffer_size as u64,
-                    Height: 1,
-                    DepthOrArraySize: 1,
-                    MipLevels: 1,
-                    SampleDesc: DXGI_SAMPLE_DESC {
-                        Count: 1,
-                        Quality: 0,
-                    },
-                    Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-                    ..Default::default()
-                },
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                None,
-                true,
-            )?;
-
-            buffer.copy_from(&[camera])?;
-
-            let cbv_descriptor = resources
-                .descriptor_manager
-                .allocate(DescriptorType::Resource)?;
-            camera_cbv_descriptors[i] = cbv_descriptor;
-
-            unsafe {
-                resources.device.CreateConstantBufferView(
-                    &D3D12_CONSTANT_BUFFER_VIEW_DESC {
-                        BufferLocation: buffer.gpu_address(),
-                        SizeInBytes: buffer.size as u32,
-                    },
-                    resources
-                        .descriptor_manager
-                        .get_cpu_handle(&cbv_descriptor)?,
-                )
-            };
-
-            Ok(buffer)
-        })?;
-
-        let srv = resources.texture_manager.get_srv(&texture)?;
-
-        let material_data = MaterialConstantBuffer {
-            texture_index: srv.index as u32,
-        };
-        let material_buffer_size = align_data(
-            std::mem::size_of_val(&material_data),
-            D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
-        );
-        let mut material_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
-        let material_constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
-            let buffer = Resource::create_committed(
-                &resources.device,
-                &D3D12_HEAP_PROPERTIES {
-                    Type: D3D12_HEAP_TYPE_UPLOAD,
-                    ..Default::default()
-                },
-                &D3D12_RESOURCE_DESC {
-                    Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                    Width: material_buffer_size as u64,
-                    Height: 1,
-                    DepthOrArraySize: 1,
-                    MipLevels: 1,
-                    SampleDesc: DXGI_SAMPLE_DESC {
-                        Count: 1,
-                        Quality: 0,
-                    },
-                    Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-                    ..Default::default()
-                },
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                None,
-                true,
-            )?;
-
-            buffer.copy_from(&[material_data])?;
-
-            let cbv_descriptor = resources
-                .descriptor_manager
-                .allocate(DescriptorType::Resource)?;
-            material_descriptors[i] = cbv_descriptor;
-
-            unsafe {
-                resources.device.CreateConstantBufferView(
-                    &D3D12_CONSTANT_BUFFER_VIEW_DESC {
-                        BufferLocation: buffer.gpu_address(),
-                        SizeInBytes: buffer.size as u32,
-                    },
-                    resources
-                        .descriptor_manager
-                        .get_cpu_handle(&cbv_descriptor)?,
-                )
-            };
-
-            Ok(buffer)
-        })?;
-
-        let model_data = ModelConstantBuffer {
-            M: glam::Mat4::from_translation(glam::Vec3::new(2.0, 0.0, 0.0)),
-        };
-        let model_buffer_size = align_data(
-            std::mem::size_of_val(&model_data),
-            D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
-        );
-        let mut model_descriptors: [DescriptorHandle; FRAME_COUNT] = Default::default();
-        let model_constant_buffers: [Resource; FRAME_COUNT] = array_init::try_array_init(|i| {
-            let buffer = Resource::create_committed(
-                &resources.device,
-                &D3D12_HEAP_PROPERTIES {
-                    Type: D3D12_HEAP_TYPE_UPLOAD,
-                    ..Default::default()
-                },
-                &D3D12_RESOURCE_DESC {
-                    Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                    Width: model_buffer_size as u64,
-                    Height: 1,
-                    DepthOrArraySize: 1,
-                    MipLevels: 1,
-                    SampleDesc: DXGI_SAMPLE_DESC {
-                        Count: 1,
-                        Quality: 0,
-                    },
-                    Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-                    ..Default::default()
-                },
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                None,
-                true,
-            )?;
-
-            buffer.copy_from(&[model_data])?;
-
-            let cbv_descriptor = resources
-                .descriptor_manager
-                .allocate(DescriptorType::Resource)?;
-            model_descriptors[i] = cbv_descriptor;
-
-            unsafe {
-                resources.device.CreateConstantBufferView(
-                    &D3D12_CONSTANT_BUFFER_VIEW_DESC {
-                        BufferLocation: buffer.gpu_address(),
-                        SizeInBytes: buffer.size as u32,
-                    },
-                    resources
-                        .descriptor_manager
-                        .get_cpu_handle(&cbv_descriptor)?,
-                )
-            };
-
-            Ok(buffer)
-        })?;
-        let basic_render_pass = BindlessTexturePass::new(&mut resources)?;
-
-        let objects = vec![Object {
-            position: Vec3::new(0.0, 0.0, 1.0),
-            texture,
-            mesh: resources.mesh_manager.add(
-                vertex_buffer,
-                index_buffer,
-                std::mem::size_of::<ObjVertex>() as u32,
-                vertices.len(),
-            )?,
-        }];
+        let objects = vec![
+            Object {
+                position: Vec3::new(0.0, 0.0, 1.0),
+                texture: texture.clone(),
+                mesh: mesh_handle,
+            },
+            Object {
+                position: Vec3::new(0.0, 1.0, 0.0),
+                texture,
+                mesh: mesh_handle,
+            },
+        ];
 
         graphics_queue.wait_for_idle()?;
 
+        let basic_render_pass = BindlessTexturePass::new(&mut resources)?;
+
         let fence_values = [0; 2];
+
         let renderer = Renderer {
             hwnd,
             dxgi_factory,
@@ -636,134 +425,14 @@ impl Renderer {
             back_buffer_handles,
             depth_buffer_handles,
             command_allocators,
-            root_signature,
-            pso,
             command_list,
             fence_values,
-
-            camera_constant_buffers,
-            camera_cbv_descriptors,
-            material_constant_buffers,
-            material_descriptors,
-            model_constant_buffers,
-            model_descriptors,
 
             basic_render_pass,
             objects,
         };
 
         Ok(renderer)
-    }
-
-    fn populate_command_list(&mut self) -> Result<()> {
-        // Resetting the command allocator while the frame is being rendered is not okay
-        let command_allocator = &self.command_allocators[self.resources.frame_index as usize];
-        unsafe {
-            command_allocator.Reset()?;
-        }
-
-        // Resetting the command list can happen right after submission
-        let command_list = &self.command_list;
-        unsafe {
-            command_list.Reset(command_allocator, &self.pso)?;
-        }
-
-        let camera_cb_handle = self
-            .resources
-            .descriptor_manager
-            .get_gpu_handle(&self.camera_cbv_descriptors[self.resources.frame_index as usize])?;
-
-        let model_cb_handle = self
-            .resources
-            .descriptor_manager
-            .get_gpu_handle(&self.model_descriptors[self.resources.frame_index as usize])?;
-
-        let material_cb_handle = self
-            .resources
-            .descriptor_manager
-            .get_gpu_handle(&self.material_descriptors[self.resources.frame_index as usize])?;
-
-        unsafe {
-            command_list.SetDescriptorHeaps(&[Some(
-                self.resources
-                    .descriptor_manager
-                    .get_heap(DescriptorType::Resource)?,
-            )]);
-            command_list.SetGraphicsRootSignature(&self.root_signature);
-
-            command_list.SetGraphicsRootDescriptorTable(0, camera_cb_handle);
-            command_list.SetGraphicsRootDescriptorTable(1, material_cb_handle);
-            command_list.SetGraphicsRootDescriptorTable(2, model_cb_handle);
-
-            command_list.RSSetViewports(&[self.resources.viewport]);
-            command_list.RSSetScissorRects(&[self.resources.scissor_rect]);
-        }
-
-        let render_target_handle = &self.back_buffer_handles[self.resources.frame_index as usize];
-        let render_target = self
-            .resources
-            .texture_manager
-            .get_texture(render_target_handle)?;
-
-        let barrier = transition_barrier(
-            &render_target.get_resource()?.device_resource,
-            D3D12_RESOURCE_STATE_PRESENT,
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-        );
-        unsafe { command_list.ResourceBarrier(&[barrier.clone()]) };
-        let _: D3D12_RESOURCE_TRANSITION_BARRIER =
-            unsafe { std::mem::ManuallyDrop::into_inner(barrier.Anonymous.Transition) };
-
-        let rtv_handle = self
-            .resources
-            .texture_manager
-            .get_rtv(render_target_handle)?;
-        let rtv = self
-            .resources
-            .descriptor_manager
-            .get_cpu_handle(&rtv_handle)?;
-
-        let depth_buffer_handle = &self.depth_buffer_handles[self.resources.frame_index as usize];
-        let dsv_handle = self
-            .resources
-            .texture_manager
-            .get_dsv(depth_buffer_handle)?;
-        let dsv = self
-            .resources
-            .descriptor_manager
-            .get_cpu_handle(&dsv_handle)?;
-
-        unsafe {
-            command_list.OMSetRenderTargets(1, &rtv, false, &dsv);
-
-            command_list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, &[]);
-            command_list.ClearRenderTargetView(rtv, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
-            command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        }
-
-        //for mesh in &self.mesh_handles {
-        //    unsafe {
-        //        command_list.IASetVertexBuffers(0, &[mesh.vbv.context("No vertex buffer view")?]);
-        //        command_list.IASetIndexBuffer(&mesh.ibv.context("No index buffer view")?);
-        //        command_list.DrawIndexedInstanced(432138, 10, 0, 0, 0);
-        //    }
-        //}
-        unsafe {
-            let barrier = transition_barrier(
-                &render_target.get_resource()?.device_resource,
-                D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_PRESENT,
-            );
-            command_list.ResourceBarrier(&[barrier.clone()]);
-            let _: D3D12_RESOURCE_TRANSITION_BARRIER =
-                std::mem::ManuallyDrop::into_inner(barrier.Anonymous.Transition);
-        }
-
-        unsafe {
-            command_list.Close()?;
-        }
-
-        Ok(())
     }
 
     pub fn resize(&mut self, _extent: (u32, u32)) -> Result<()> {
@@ -777,7 +446,7 @@ impl Renderer {
             }
             let command_list = &self.command_list;
             unsafe {
-                command_list.Reset(command_allocator, &self.pso)?;
+                command_list.Reset(command_allocator, None)?;
                 command_list.Close()?;
             }
             self.command_list = unsafe {
@@ -925,10 +594,6 @@ impl Renderer {
             V: glam::Mat4::from_translation(Vec3::new(0.0, -0.8, 1.5)),
             P: glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
         };
-
-        for cb in &mut self.camera_constant_buffers {
-            cb.copy_from(&[camera])?;
-        }
 
         self.resources.camera = camera;
 

@@ -1,14 +1,12 @@
 use anyhow::{Context, Result};
 use d3d12_utils::{
     align_data, compile_pixel_shader, compile_vertex_shader, create_pipeline_state,
-    create_root_signature, transition_barrier, DescriptorHandle, DescriptorType, Resource,
-    TextureHandle,
+    create_root_signature, DescriptorHandle, DescriptorType, Resource, TextureHandle,
 };
 use windows::{
     core::PCSTR,
-    Win32::{
-        Foundation::FWP_E_LIFETIME_MISMATCH,
-        Graphics::{Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, Direct3D12::*, Dxgi::Common::*},
+    Win32::Graphics::{
+        Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, Direct3D12::*, Dxgi::Common::*,
     },
 };
 
@@ -98,7 +96,7 @@ impl<const FRAME_COUNT: usize> BindlessTexturePass<FRAME_COUNT> {
         );
 
         let mut camera_cbv_descriptors: [DescriptorHandle; FRAME_COUNT] =
-            array_init::array_init(|i| DescriptorHandle::default());
+            array_init::array_init(|_| DescriptorHandle::default());
         let camera_constant_buffers: [Resource; FRAME_COUNT] =
             array_init::try_array_init(|i| -> Result<Resource> {
                 let buffer = Resource::create_committed(
@@ -152,7 +150,7 @@ impl<const FRAME_COUNT: usize> BindlessTexturePass<FRAME_COUNT> {
             D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
         );
         let mut material_descriptors: [DescriptorHandle; FRAME_COUNT] =
-            array_init::array_init(|i| DescriptorHandle::default());
+            array_init::array_init(|_| DescriptorHandle::default());
         let material_constant_buffers: [Resource; FRAME_COUNT] =
             array_init::try_array_init(|i| -> Result<Resource> {
                 let buffer = Resource::create_committed(
@@ -207,7 +205,7 @@ impl<const FRAME_COUNT: usize> BindlessTexturePass<FRAME_COUNT> {
             D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as usize,
         );
         let mut model_descriptors: [DescriptorHandle; FRAME_COUNT] =
-            array_init::array_init(|i| DescriptorHandle::default());
+            array_init::array_init(|_| DescriptorHandle::default());
         let model_constant_buffers: [Resource; FRAME_COUNT] =
             array_init::try_array_init(|i| -> Result<Resource> {
                 let buffer = Resource::create_committed(
@@ -331,7 +329,7 @@ impl<const FRAME_COUNT: usize> BindlessTexturePass<FRAME_COUNT> {
 
             let model_cb = &self.model_constant_buffers[resources.frame_index as usize];
             model_cb.copy_from(&[ModelConstantBuffer {
-                M: glam::Mat4::IDENTITY,
+                M: glam::Mat4::from_translation(object.position),
             }])?;
 
             let vbv = object.mesh.vbv.context("Object vertex buffer view")?;
@@ -340,7 +338,7 @@ impl<const FRAME_COUNT: usize> BindlessTexturePass<FRAME_COUNT> {
             unsafe {
                 command_list.IASetVertexBuffers(0, &[vbv]);
                 command_list.IASetIndexBuffer(&ibv);
-                command_list.DrawIndexedInstanced(object.mesh.num_vertices as u32, 10, 0, 0, 0);
+                command_list.DrawIndexedInstanced(object.mesh.num_vertices as u32, 1, 0, 0, 0);
             }
         }
 
