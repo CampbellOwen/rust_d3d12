@@ -105,6 +105,31 @@ impl Application {
     }
 
     pub fn new(hwnd: HWND, window_size: (u32, u32)) -> Result<Application> {
+        Ok(Self {
+            renderer: Some(Renderer::new(hwnd, window_size)?),
+        })
+    }
+
+    pub fn render(&mut self) -> Result<()> {
+        self.renderer.as_mut().context("No renderer")?.render()
+    }
+
+    pub fn resize(&mut self, extent: (u32, u32)) -> Result<()> {
+        self.renderer
+            .as_mut()
+            .context("No renderer")?
+            .resize(extent)
+    }
+
+    pub fn wait_for_idle(&mut self) -> Result<()> {
+        self.renderer
+            .as_mut()
+            .context("No renderer")?
+            .wait_for_idle()
+    }
+}
+impl Renderer {
+    pub fn new(hwnd: HWND, window_size: (u32, u32)) -> Result<Renderer> {
         if cfg!(debug_assertions) {
             unsafe {
                 let mut debug: Option<ID3D12Debug> = None;
@@ -136,7 +161,7 @@ impl Application {
 
         let (width, height) = window_size;
 
-        let graphics_queue = CommandQueue::new(
+        let mut graphics_queue = CommandQueue::new(
             &device,
             D3D12_COMMAND_LIST_TYPE_DIRECT,
             "Main Graphics Queue",
@@ -557,9 +582,10 @@ impl Application {
         })?;
 
         let render_passes: Vec<Box<dyn RenderPass>> = vec![Box::new(BindlessTexturePass::new())];
+        graphics_queue.wait_for_idle()?;
 
         let fence_values = [0; 2];
-        let resources = Renderer {
+        let renderer = Renderer {
             hwnd,
             dxgi_factory,
 
@@ -597,81 +623,55 @@ impl Application {
             render_passes,
         };
 
-        let mut renderer = Application {
-            renderer: Some(resources),
-        };
-
-        renderer
-            .renderer
-            .as_mut()
-            .unwrap()
-            .graphics_queue
-            .wait_for_idle()?;
-
         Ok(renderer)
     }
 
     fn populate_command_list(&mut self) -> Result<()> {
-        ensure!(self.renderer.is_some());
-        let internal_resources = self.renderer.as_mut().unwrap();
-
         // Resetting the command allocator while the frame is being rendered is not okay
-        let command_allocator = &internal_resources.command_allocators
-            [internal_resources.resources.frame_index as usize];
+        let command_allocator = &self.command_allocators[self.resources.frame_index as usize];
         unsafe {
             command_allocator.Reset()?;
         }
 
         // Resetting the command list can happen right after submission
-        let command_list = &internal_resources.command_list;
+        let command_list = &self.command_list;
         unsafe {
-            command_list.Reset(command_allocator, &internal_resources.pso)?;
+            command_list.Reset(command_allocator, &self.pso)?;
         }
 
-        let camera_cb_handle = internal_resources
+        let camera_cb_handle = self
             .resources
             .descriptor_manager
-            .get_gpu_handle(
-                &internal_resources.camera_cbv_descriptors
-                    [internal_resources.resources.frame_index as usize],
-            )?;
+            .get_gpu_handle(&self.camera_cbv_descriptors[self.resources.frame_index as usize])?;
 
-        let model_cb_handle = internal_resources
+        let model_cb_handle = self
             .resources
             .descriptor_manager
-            .get_gpu_handle(
-                &internal_resources.model_descriptors
-                    [internal_resources.resources.frame_index as usize],
-            )?;
+            .get_gpu_handle(&self.model_descriptors[self.resources.frame_index as usize])?;
 
-        let material_cb_handle = internal_resources
+        let material_cb_handle = self
             .resources
             .descriptor_manager
-            .get_gpu_handle(
-                &internal_resources.material_descriptors
-                    [internal_resources.resources.frame_index as usize],
-            )?;
+            .get_gpu_handle(&self.material_descriptors[self.resources.frame_index as usize])?;
 
         unsafe {
             command_list.SetDescriptorHeaps(&[Some(
-                internal_resources
-                    .resources
+                self.resources
                     .descriptor_manager
                     .get_heap(DescriptorType::Resource)?,
             )]);
-            command_list.SetGraphicsRootSignature(&internal_resources.root_signature);
+            command_list.SetGraphicsRootSignature(&self.root_signature);
 
             command_list.SetGraphicsRootDescriptorTable(0, camera_cb_handle);
             command_list.SetGraphicsRootDescriptorTable(1, material_cb_handle);
             command_list.SetGraphicsRootDescriptorTable(2, model_cb_handle);
 
-            command_list.RSSetViewports(&[internal_resources.resources.viewport]);
-            command_list.RSSetScissorRects(&[internal_resources.resources.scissor_rect]);
+            command_list.RSSetViewports(&[self.resources.viewport]);
+            command_list.RSSetScissorRects(&[self.resources.scissor_rect]);
         }
 
-        let render_target_handle = &internal_resources.back_buffer_handles
-            [internal_resources.resources.frame_index as usize];
-        let render_target = internal_resources
+        let render_target_handle = &self.back_buffer_handles[self.resources.frame_index as usize];
+        let render_target = self
             .resources
             .texture_manager
             .get_texture(render_target_handle)?;
@@ -685,22 +685,21 @@ impl Application {
         let _: D3D12_RESOURCE_TRANSITION_BARRIER =
             unsafe { std::mem::ManuallyDrop::into_inner(barrier.Anonymous.Transition) };
 
-        let rtv_handle = internal_resources
+        let rtv_handle = self
             .resources
             .texture_manager
             .get_rtv(render_target_handle)?;
-        let rtv = internal_resources
+        let rtv = self
             .resources
             .descriptor_manager
             .get_cpu_handle(&rtv_handle)?;
 
-        let depth_buffer_handle = &internal_resources.depth_buffer_handles
-            [internal_resources.resources.frame_index as usize];
-        let dsv_handle = internal_resources
+        let depth_buffer_handle = &self.depth_buffer_handles[self.resources.frame_index as usize];
+        let dsv_handle = self
             .resources
             .texture_manager
             .get_dsv(depth_buffer_handle)?;
-        let dsv = internal_resources
+        let dsv = self
             .resources
             .descriptor_manager
             .get_cpu_handle(&dsv_handle)?;
@@ -709,7 +708,7 @@ impl Application {
             command_list.OMSetRenderTargets(1, &rtv, false, &dsv);
         }
 
-        for mesh in &internal_resources.mesh_handles {
+        for mesh in &self.mesh_handles {
             unsafe {
                 command_list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, &[]);
                 command_list.ClearRenderTargetView(rtv, &*[0.0, 0.2, 0.4, 1.0].as_ptr(), &[]);
@@ -738,23 +737,21 @@ impl Application {
     }
 
     pub fn resize(&mut self, _extent: (u32, u32)) -> Result<()> {
-        ensure!(self.renderer.is_some());
         self.wait_for_idle().expect("All GPU work done");
-        let resources = self.renderer.as_mut().unwrap();
 
         // Resetting the command allocator while the frame is being rendered is not okay
         for i in 0..FRAME_COUNT {
-            let command_allocator = &resources.command_allocators[i];
+            let command_allocator = &self.command_allocators[i];
             unsafe {
                 command_allocator.Reset()?;
             }
-            let command_list = &resources.command_list;
+            let command_list = &self.command_list;
             unsafe {
-                command_list.Reset(command_allocator, &resources.pso)?;
+                command_list.Reset(command_allocator, &self.pso)?;
                 command_list.Close()?;
             }
-            resources.command_list = unsafe {
-                resources.resources.device.CreateCommandList1(
+            self.command_list = unsafe {
+                self.resources.device.CreateCommandList1(
                     0,
                     D3D12_COMMAND_LIST_TYPE_DIRECT,
                     D3D12_COMMAND_LIST_FLAG_NONE,
@@ -780,17 +777,17 @@ impl Application {
         //}
 
         for i in 0..FRAME_COUNT {
-            resources.resources.texture_manager.delete(
-                &mut resources.resources.descriptor_manager,
-                resources.back_buffer_handles[i].clone(),
+            self.resources.texture_manager.delete(
+                &mut self.resources.descriptor_manager,
+                self.back_buffer_handles[i].clone(),
             );
-            resources.back_buffer_handles[i] = Default::default();
+            self.back_buffer_handles[i] = Default::default();
 
-            resources.resources.texture_manager.delete(
-                &mut resources.resources.descriptor_manager,
-                resources.depth_buffer_handles[i].clone(),
+            self.resources.texture_manager.delete(
+                &mut self.resources.descriptor_manager,
+                self.depth_buffer_handles[i].clone(),
             );
-            resources.depth_buffer_handles[i] = Default::default();
+            self.depth_buffer_handles[i] = Default::default();
         }
 
         if cfg!(debug_assertions) {
@@ -808,10 +805,8 @@ impl Application {
             }
         }
 
-        std::println!("RESIZING BACKBUFFERS to ({},{})", width, height);
-
         unsafe {
-            resources.swap_chain.ResizeBuffers(
+            self.swap_chain.ResizeBuffers(
                 FRAME_COUNT as u32,
                 width,
                 height,
@@ -821,7 +816,7 @@ impl Application {
         }
 
         for i in 0..FRAME_COUNT {
-            let back_buffer: ID3D12Resource = unsafe { resources.swap_chain.GetBuffer(i as u32) }?;
+            let back_buffer: ID3D12Resource = unsafe { self.swap_chain.GetBuffer(i as u32) }?;
             unsafe {
                 back_buffer.SetName(PCWSTR::from(&format!("Backbuffer {}", COUNTER).into()))?;
                 COUNTER += 1;
@@ -844,43 +839,41 @@ impl Application {
                 resource: Some(back_buffer),
             };
 
-            resources.back_buffer_handles[i] = resources.resources.texture_manager.add_texture(
-                &resources.resources.device,
-                &mut resources.resources.descriptor_manager,
+            self.back_buffer_handles[i] = self.resources.texture_manager.add_texture(
+                &self.resources.device,
+                &mut self.resources.descriptor_manager,
                 back_buffer,
             )?;
 
-            resources.depth_buffer_handles[i] =
-                resources.resources.texture_manager.create_empty_texture(
-                    &resources.resources.device,
-                    TextureInfo {
-                        dimension: TextureDimension::Two(width as usize, height),
-                        format: DXGI_FORMAT_D32_FLOAT,
-                        array_size: 1,
-                        num_mips: 1,
-                        is_render_target: false,
-                        is_depth_buffer: true,
-                        is_unordered_access: false,
-                    },
-                    Some(D3D12_CLEAR_VALUE {
-                        Format: DXGI_FORMAT_D32_FLOAT,
-                        Anonymous: D3D12_CLEAR_VALUE_0 {
-                            DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
-                                Depth: 1.0,
-                                Stencil: 0,
-                            },
+            self.depth_buffer_handles[i] = self.resources.texture_manager.create_empty_texture(
+                &self.resources.device,
+                TextureInfo {
+                    dimension: TextureDimension::Two(width as usize, height),
+                    format: DXGI_FORMAT_D32_FLOAT,
+                    array_size: 1,
+                    num_mips: 1,
+                    is_render_target: false,
+                    is_depth_buffer: true,
+                    is_unordered_access: false,
+                },
+                Some(D3D12_CLEAR_VALUE {
+                    Format: DXGI_FORMAT_D32_FLOAT,
+                    Anonymous: D3D12_CLEAR_VALUE_0 {
+                        DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
+                            Depth: 1.0,
+                            Stencil: 0,
                         },
-                    }),
-                    D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                    &mut resources.resources.descriptor_manager,
-                    true,
-                )?;
+                    },
+                }),
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                &mut self.resources.descriptor_manager,
+                true,
+            )?;
         }
 
-        resources.resources.frame_index =
-            unsafe { resources.swap_chain.GetCurrentBackBufferIndex() };
+        self.resources.frame_index = unsafe { self.swap_chain.GetCurrentBackBufferIndex() };
 
-        resources.resources.viewport = D3D12_VIEWPORT {
+        self.resources.viewport = D3D12_VIEWPORT {
             TopLeftX: 0.0,
             TopLeftY: 0.0,
             Width: width as f32,
@@ -889,7 +882,7 @@ impl Application {
             MaxDepth: D3D12_MAX_DEPTH,
         };
 
-        resources.resources.scissor_rect = RECT {
+        self.resources.scissor_rect = RECT {
             left: 0,
             top: 0,
             right: width as i32,
@@ -903,7 +896,7 @@ impl Application {
             glam::Mat4::perspective_lh(PI / 2.0, aspect_ratio, 0.1, 100.0),
         ];
 
-        for cb in &mut resources.camera_constant_buffers {
+        for cb in &mut self.camera_constant_buffers {
             cb.copy_from(&constant_buffer)?;
         }
 
@@ -911,47 +904,30 @@ impl Application {
     }
 
     pub fn wait_for_idle(&mut self) -> Result<()> {
-        ensure!(self.renderer.is_some());
-        let resources = self.renderer.as_mut().unwrap();
-
-        for fence in resources.fence_values {
-            resources.graphics_queue.wait_for_fence_blocking(fence)?;
+        for fence in self.fence_values {
+            self.graphics_queue.wait_for_fence_blocking(fence)?;
         }
-        resources.graphics_queue.wait_for_idle()
+        self.graphics_queue.wait_for_idle()
     }
 
     pub fn render(&mut self) -> Result<()> {
-        ensure!(self.renderer.is_some());
-        {
-            // Let this fall out of scope after waiting to remove the mutable reference
-            let resources = self.renderer.as_mut().unwrap();
-
-            let last_fence_value = resources.fence_values[resources.resources.frame_index as usize];
-            resources
-                .graphics_queue
-                .wait_for_fence_blocking(last_fence_value)?;
-        }
+        let last_fence_value = self.fence_values[self.resources.frame_index as usize];
+        self.graphics_queue
+            .wait_for_fence_blocking(last_fence_value)?;
 
         self.populate_command_list()?;
 
-        let renderer = self.renderer.as_mut().unwrap();
+        let command_list = ID3D12CommandList::from(&self.command_list);
 
-        let command_list = ID3D12CommandList::from(&renderer.command_list);
+        let fence_value = self.graphics_queue.execute_command_list(&command_list)?;
 
-        let fence_value = renderer
-            .graphics_queue
-            .execute_command_list(&command_list)?;
+        self.fence_values[self.resources.frame_index as usize] = fence_value;
 
-        renderer.fence_values[renderer.resources.frame_index as usize] = fence_value;
+        unsafe { self.swap_chain.Present(1, 0) }.ok()?;
 
-        unsafe { renderer.swap_chain.Present(1, 0) }.ok()?;
+        self.resources.frame_index = unsafe { self.swap_chain.GetCurrentBackBufferIndex() };
 
-        renderer.resources.frame_index = unsafe { renderer.swap_chain.GetCurrentBackBufferIndex() };
-
-        renderer
-            .resources
-            .upload_ring_buffer
-            .clean_up_submissions()?;
+        self.resources.upload_ring_buffer.clean_up_submissions()?;
 
         Ok(())
     }
