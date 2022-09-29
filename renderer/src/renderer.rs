@@ -403,11 +403,11 @@ impl Renderer {
                 texture: texture.clone(),
                 mesh: mesh_handle,
             },
-            Object {
-                position: Vec3::new(0.0, 1.0, 0.0),
-                texture,
-                mesh: mesh_handle,
-            },
+            //Object {
+            //    position: Vec3::new(0.0, 1.0, 0.0),
+            //    texture,
+            //    mesh: mesh_handle,
+            //},
         ];
 
         graphics_queue.wait_for_idle()?;

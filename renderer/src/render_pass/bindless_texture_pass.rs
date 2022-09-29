@@ -329,7 +329,8 @@ impl<const FRAME_COUNT: usize> BindlessTexturePass<FRAME_COUNT> {
 
             let model_cb = &self.model_constant_buffers[resources.frame_index as usize];
             model_cb.copy_from(&[ModelConstantBuffer {
-                M: glam::Mat4::from_translation(object.position),
+                M: glam::Mat4::from_translation(object.position)
+                    * glam::Mat4::from_rotation_y(std::f32::consts::PI * -0.9),
             }])?;
 
             let vbv = object.mesh.vbv.context("Object vertex buffer view")?;
