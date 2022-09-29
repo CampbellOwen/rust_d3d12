@@ -146,11 +146,13 @@ impl Renderer {
             ..Default::default()
         };
         unsafe {
-            device.CheckFeatureSupport(
-                D3D12_FEATURE_D3D12_OPTIONS,
-                std::ptr::addr_of!(data_options) as *mut c_void,
-                std::mem::size_of_val(&data_options) as u32,
-            )?;
+            device
+                .CheckFeatureSupport(
+                    D3D12_FEATURE_D3D12_OPTIONS,
+                    std::ptr::addr_of!(data_options) as *mut c_void,
+                    std::mem::size_of_val(&data_options) as u32,
+                )
+                .expect("Feature not supported");
         }
 
         let (width, height) = window_size;
