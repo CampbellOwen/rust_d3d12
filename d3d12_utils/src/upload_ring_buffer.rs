@@ -119,7 +119,7 @@ impl UploadRingBuffer {
             heap.create_resource(
                 device,
                 &buffer_desc,
-                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
                 None,
                 true,
             )?
@@ -131,7 +131,7 @@ impl UploadRingBuffer {
                     ..Default::default()
                 },
                 &buffer_desc,
-                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
                 None,
                 true,
             )?
