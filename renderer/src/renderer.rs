@@ -28,7 +28,7 @@ fn load_cube() -> Result<(Vec<ObjVertex>, Vec<u32>)> {
 }
 
 fn load_bunny() -> Result<(Vec<ObjVertex>, Vec<u32>)> {
-    let obj = std::fs::read_to_string(r"F:\Models\bunny.obj")?;
+    let obj = std::fs::read_to_string(r"assets/bunny.obj")?;
 
     parse_obj(obj.lines())
 }
@@ -354,7 +354,7 @@ impl Renderer {
 
         // TEXTURE UPLOAD
 
-        let f = File::open(r"F:\Textures\uv_checker_8k_colour.dds")?;
+        let f = File::open(r"assets/uv_checker.dds")?;
         let reader = BufReader::new(f);
 
         let dds_file = ddsfile::Dds::read(reader)?;
