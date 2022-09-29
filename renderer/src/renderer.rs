@@ -135,7 +135,7 @@ impl Renderer {
 
         let dxgi_factory = create_dxgi_factory()?;
 
-        let feature_level = D3D_FEATURE_LEVEL_11_0;
+        let feature_level = D3D_FEATURE_LEVEL_12_2;
 
         let adapter = get_hardware_adapter(&dxgi_factory, feature_level)?;
 
